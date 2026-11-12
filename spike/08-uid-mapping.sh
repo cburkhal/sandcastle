@@ -27,11 +27,12 @@ chmod -R go-rwx "$HOST_REPO/.git"   # worst case: host files readable by the own
 note "host uid: $(id -u), host .git mode: $(stat -f '%Sp' "$HOST_REPO/.git")"
 
 net_up
+ensure_image
 container volume create "$HOME_VOL" >/dev/null
 container volume create "$WS_VOL" >/dev/null
 
 check_as() {
-  local user="$1"
+  local user="$1" want_write="$2"
   step "As user $user"
   box_rm "$BOX"
   container run -d --name "$BOX" --network "$NET" --no-dns --read-only --tmpfs /tmp --cap-drop ALL \
@@ -45,14 +46,24 @@ check_as() {
   expect_ok "reads /source.git/HEAD" bx cat /source.git/HEAD
   expect_ok "reads objects in /source.git" bx bash -c 'ls /source.git/objects >/dev/null'
   expect_fail "cannot write /source.git" bx touch /source.git/x
-  expect_ok "writes the home volume" bx touch "/home/agent/by-$user"
-  expect_ok "writes the workspace volume" bx touch "/workspace/by-$user"
+  if [ "$want_write" = yes ]; then
+    expect_ok "writes the home volume" bx touch "/home/agent/by-$user"
+    expect_ok "writes the workspace volume" bx touch "/workspace/by-$user"
+  else
+    observe "writes the home volume (fresh, root-owned)" bx touch "/home/agent/by-$user"
+    observe "writes the workspace volume (fresh, root-owned)" bx touch "/workspace/by-$user"
+  fi
 }
 
-check_as "$BOX_UID"
-check_as 4242
+# Fresh volumes first: item 5 found they are root-owned.
+check_as "$BOX_UID" no
+# Then after the one-off chown used by the other scripts.
+box_rm "$BOX"   # a volume cannot be attached to two running containers
+volume_init "$HOME_VOL" "$WS_VOL"
+check_as "$BOX_UID" yes
+check_as 4242 no
 
 step "Do files written to a volume keep their owner across boxes?"
-container exec "$BOX" stat -c '%n  %u:%g' /workspace/by-"$BOX_UID" /workspace/by-4242 2>&1 || true
+container exec "$BOX" stat -c '%n  %u:%g' /workspace/by-"$BOX_UID" 2>&1 || true
 
 finish

@@ -82,7 +82,7 @@ ensure_image() {
 volume_init() {
   local v
   for v in "$@"; do
-    container volume create "$v" >/dev/null
+    container volume create "$v" >/dev/null 2>&1 || true   # may exist already
     container run --rm -u 0 --cap-drop ALL --cap-add CAP_CHOWN --network none -v "$v:/v" "$SPIKE_IMAGE" \
       chown "$BOX_UID:$BOX_UID" /v >/dev/null
   done

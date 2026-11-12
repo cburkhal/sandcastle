@@ -31,12 +31,14 @@ echo .env >"$HOST_REPO/.gitignore"
 
 step "Box with the host .git mounted read-only and a workspace volume"
 net_up
-container volume create "$WS_VOL" >/dev/null
+ensure_image
+volume_init "$WS_VOL"   # fresh volumes are root-owned; see lib.sh
 container run -d --name "$BOX" --network "$NET" --no-dns --read-only --tmpfs /tmp --cap-drop ALL \
   --mount "type=bind,source=$HOST_REPO/.git,target=/source.git,readonly" \
   -v "$WS_VOL:/workspace" -e HOME=/tmp/home \
   "$SPIKE_IMAGE" sleep 3600 >/dev/null
 bx() { container exec "$BOX" "$@"; }
+bx mkdir -p /tmp/home
 note "box user: $(bx id); /source.git owner: $(bx stat -c '%u:%g %A' /source.git)"
 
 step "Seed: box clones from the read-only mount"

@@ -100,8 +100,11 @@ step "Rule set B: by interface (IPv4 + IPv6), stateful host -> box rule"
 load_rules \
   "pass in quick on $IFACE inet proto tcp from $SUBNET to $GW port $RELAY_PORT" \
   "pass out quick on $IFACE inet proto tcp from $GW to $SUBNET port $UI_PORT keep state" \
-  "block return in quick on $IFACE all"
+  "block return in quick on $IFACE all" \
+  "block return out quick on $IFACE all"
 probes blocked
+note "the 'block out' rule is for item 4: the Mac has IP forwarding on, so without it a LAN device"
+note "with a route to $SUBNET could reach the box. Only the host's own gateway address may talk to the box."
 
 step "With rule set B loaded: does a box still start and get its address?"
 start_box

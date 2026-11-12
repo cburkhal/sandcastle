@@ -4,9 +4,9 @@ Context for Claude Code working in this repo. Read this file fully before making
 
 - Repo: https://github.com/cburkhal/sandcastle
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
-- This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount).
+- This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-12: **design only, no code yet.** The next step is the manual spike (see "Current status and next steps").
+- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`), no Rust code yet.** The next step is v0.1 (see "Current status and next steps").
 
 ---
 
@@ -19,7 +19,7 @@ Owner: a single user on one Mac (Apple silicon, macOS 27). Self-hosted, personal
 ### Goals
 
 - OpenCode runs with full autonomy (`"permission": {"*": "allow"}`). Safety comes from the box, not from permission prompts.
-- Chat in the browser via `opencode web`. **Frictionless:** nothing to type. `sandcastle up` opens the browser already logged in.
+- Chat in the browser via OpenCode's web UI (`opencode serve`). **Frictionless:** `sandcastle up` asks for what it needs once at the start (Bitwarden master password, `sudo`), then opens the browser already logged in. Nothing prompts after that.
 - Secrets live in Bitwarden. Never written to disk, never mounted into the VM, never committed.
 - Reset is one command and leaves nothing on macOS except repo changes the user keeps.
 - A small Rust CLI owns the whole lifecycle, built from replaceable modules, so a UI can sit on top later.
@@ -79,9 +79,10 @@ The box has exactly one exit: the relay on macOS.
 | Component | What it is | Source / license | Why trusted enough |
 | --- | --- | --- | --- |
 | Apple `container` | One lightweight VM per container | github.com/apple/container, Apache-2.0 | Apple-maintained; VM boundary per container |
-| OpenCode | The agent, run as `opencode web` | opencode.ai, MIT | Pinned version, built into our own image |
+| OpenCode | The agent, run as `opencode serve` | github.com/anomalyco/opencode, MIT | Version pinned by SHA-256 of the GitHub release, built into our own image |
 | LiteLLM | Existing company model gateway | Already operated | Issues virtual keys with budget, model allowlist, expiry |
 | Bitwarden CLI (`bw`) | Source of truth for secrets | bitwarden.com/help/cli, official | User unlocks it; session never stored |
+| macOS `pf` | Packet filter that limits the box to the relay | Part of macOS | Rules are few and loaded per box |
 | sandcastle (Rust) | CLI plus host-side relay | This repo | Small, single purpose, reviewable |
 
 ### 2.1 sandcastle CLI (Rust)
@@ -94,29 +95,33 @@ One binary on macOS. Drives `container` through its public CLI (no private APIs)
 
 ### 2.2 Host relay (part of the CLI): the security core
 
-Listens on `127.0.0.1` for the browser and on the host side of each box's internal network for the box. Three jobs:
+Listens on `127.0.0.1` for the browser and on the host side of each box's internal network (the network's gateway address) for the box. The gateway address exists on the host only while a box is running on that network, so the box-side listeners bind after the box has started and must rebind on error. Three jobs:
 
-1. **UI gateway.** Serves the OpenCode web UI on `127.0.0.1:<port>`. `sandcastle up` opens a one-time link that sets a session cookie. Every request must then carry the cookie, a `Host` of `127.0.0.1:<port>` (blocks DNS rebinding) and no foreign `Origin` (blocks other websites). When forwarding to the box, the relay adds OpenCode's internal Basic Auth password (`OPENCODE_SERVER_PASSWORD`).
+1. **UI gateway.** Serves the OpenCode web UI on `127.0.0.1:<port>`. `sandcastle up` opens a one-time link that sets a session cookie. Every request must then carry the cookie, a `Host` of `127.0.0.1:<port>` (blocks DNS rebinding) and no foreign `Origin` (blocks other websites). When forwarding to the box, the relay adds OpenCode's internal Basic Auth credentials (user `opencode`, password `OPENCODE_SERVER_PASSWORD`). OpenCode 2.x has its own one-time links (`opencode pair`); they are not used.
 2. **LLM relay.** OpenCode talks plain HTTP to `http://<gateway>:<port>/v1` with a dummy key. The relay swaps in the real LiteLLM key and forwards over HTTPS. The key exists only in relay memory. No TLS interception needed because the relay is the endpoint.
-3. **Egress proxy.** All other outbound traffic goes via `HTTP_PROXY` / `HTTPS_PROXY`. The relay allows `CONNECT` only to allowlisted hosts and logs every blocked attempt.
+3. **Egress proxy.** All other outbound traffic goes via `HTTP_PROXY` / `HTTPS_PROXY`. The relay allows `CONNECT` only to allowlisted hosts and logs every blocked attempt. OpenCode asks for `models.opencode.ai` at start; it works without it and the host stays off the allowlist.
 
-Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server; since v1.1.10 the server is off by default but still unauthenticated when enabled. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Confirmed by the owner (question 6).
+The relay checks the peer address of box-side connections: the host sees the box's own address, not a NAT address.
+
+Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server. In 2.2.7 the API answers 401 without credentials and 2.2.6 added origin checks, but the relay does not rely on either. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Confirmed by the owner (question 6).
 
 ### 2.3 The box (Apple container)
 
-- **Image:** `debian:stable-slim` pinned by digest, plus Node, Git, ripgrep and a pinned OpenCode. Built locally with `container build` from a Containerfile (OCI). Non-root user.
-- **Entrypoint:** `opencode web --hostname 0.0.0.0 --port 4096` with `OPENCODE_SERVER_PASSWORD` set to the random per-run value (only the relay knows it).
-- **Network:** per-box network via `container network create --internal` (host-only access). The relay is the only way out.
-- **DNS:** off (`--no-dns`). Names are resolved by the relay, so DNS can't be a side channel.
-- **Mounts:** a named volume at `/workspace` holding the box's own clone of the repo; OpenCode config read-only; a named volume for the agent's home (sessions, caches). **The host working tree is never mounted read-write. No macOS home mount. No SSH agent (`--ssh` stays off).**
+- **Image:** `debian:stable-slim` pinned by digest, plus Node, Git, ripgrep and a pinned OpenCode. OpenCode comes from the GitHub release tarball, checked against a pinned SHA-256 at build time (2.x is not on npm). Built locally with `container build` from a Containerfile (OCI). Non-root user (uid 1001 in the spike).
+- **Entrypoint:** `opencode serve --hostname 0.0.0.0 --port 4096` with `OPENCODE_SERVER_PASSWORD` set to the random per-run value (only the relay knows it). There is no `opencode web` in 2.x. Only `serve` runs in the box; `opencode pair --remote` can open a tunnel to the internet and must stay blocked by the egress allowlist.
+- **Network:** per-box network via `container network create --internal` (host-only access). The relay is the only way out. `container` picks the subnet; read gateway and subnet from `network inspect`. Box addresses change between starts.
+- **Host firewall:** "internal" keeps the box off the internet and the LAN, but not off the Mac: without a filter the box reaches every host service that listens on `0.0.0.0` or `::`. A pf rule set per box, by bridge interface, allows only box to relay ports and host gateway address to box port 4096, and blocks everything else in both directions (see 2.6).
+- **DNS:** off (`--no-dns`). Names are resolved by the relay, so DNS can't be a side channel. `--no-dns` still leaves `1.1.1.1` in `/etc/resolv.conf`; it is unreachable, so tools that ignore the proxy fail after a 20 s timeout. A resolver address that refuses at once would make that fast (untested).
+- **Proxy variables:** `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, `no_proxy` and `NODE_USE_ENV_PROXY=1`. Verified for Node `fetch`, npm, Git and Bun.
+- **Mounts:** a named volume at `/workspace` holding the box's own clone of the repo; OpenCode config read-only (passed with `OPENCODE_CONFIG`); a named volume for the agent's home (sessions, caches). New volumes are root-owned: when sandcastle creates one, a one-off root container with no network and only `CAP_CHOWN` hands it to the box user, before the box starts. A volume can be attached to only one running container. **The host working tree is never mounted read-write. No macOS home mount. No SSH agent (`--ssh` stays off).**
 - **Hardening:** `--read-only` root filesystem, `--tmpfs /tmp`, `--cap-drop ALL`, CPU and memory limits (`-c`, `-m`).
 - **Ports:** none published. The relay reaches port 4096 over the internal network.
 - A "container machine" (systemd, `container machine create`) is **not** used: with Docker out of scope, one plain container per repo is simpler and smaller. If ever used, `--home-mount` must be `none` (default is `rw`).
 
 ### 2.4 Secrets flow
 
-1. `sandcastle up` checks `bw status`. If locked, it runs `bw unlock` interactively and keeps `BW_SESSION` in memory for that one command only.
-2. Resolves the LiteLLM virtual key by Bitwarden item ID and hands it to the relay in memory.
+1. `sandcastle up` checks `bw status`. If not logged in, it stops and says how to log in (see `README.md`). If locked, it runs `bw unlock` interactively and keeps `BW_SESSION` in memory for that one command only.
+2. Resolves the LiteLLM virtual key by Bitwarden item ID and hands it to the relay in memory. In the owner's vault the item is a Login with the gateway URL in the website field and the key in the password field.
 3. The box gets only a dummy key and the relay's address.
 4. `sandcastle down` stops the relay; the key is gone.
 
@@ -133,10 +138,30 @@ Model: clone-and-fetch. The agent never writes to the host repo, so nothing it p
 - The user reviews, merges and pushes with plain Git on macOS.
 - Tradeoff accepted by the owner: the agent's working tree cannot be opened live in a macOS editor. Uncommitted work in the box is invisible to the host until committed and fetched.
 
-Proposed mechanism (unverified, see question 7 and the spike):
+Mechanism (verified by spike item 7; confirming it over a relay Git proxy is still question 7):
 - Seed: the host repo's `.git` directory is mounted read-only into the box as the clone source. Only `.git`, not the working tree, so untracked files such as `.env` stay out of the box. Check that `.git/config` holds no credentials in remote URLs before mounting.
-- Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream.
+- Seed details: the mount root shows up as root-owned in the box, so the box's Git config needs `safe.directory` for it. Whatever is mounted is readable by every user in the box, regardless of host file modes.
+- Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream. In the spike: `git -c protocol.ext.allow=always fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The `ext` transport is enabled for that one command only; exec needs `-i`.
 - Sync host to box: the agent runs `git fetch` from the read-only source mount.
+
+### 2.6 Host firewall (pf)
+
+Needed because of spike items 1 and 4: a box on an internal network reaches host services on all addresses, and the Mac forwards IP, so a LAN device with a route could reach the box.
+
+Rules per box, by bridge interface (verified in spike item 9, except the last line, which is added for item 4 and not run yet):
+
+```
+pass in quick on <bridge> inet proto tcp from <subnet> to <gateway> port <relay ports>
+pass out quick on <bridge> inet proto tcp from <gateway> to <subnet> port 4096 keep state
+block return in quick on <bridge> all
+block return out quick on <bridge> all
+```
+
+- Rules by subnet alone are not enough: they leave IPv6 link-local open.
+- The bridge interface exists only while the box runs, so the rules load after the box starts, like the relay's box-side bind. Until both are in place the box must not do anything: the entrypoint waits for the relay.
+- Anchor: one line `anchor "sandcastle/*"` in `/etc/pf.conf`, added by `init` (owner decision). macOS updates may remove it, so `doctor` checks that it is still there, and `up` refuses to start a box without it. Rules go into `sandcastle/<box>`.
+- pf is enabled with a reference token (`pfctl -E`) and released with `pfctl -X` on `down`.
+- Needs root: `up` asks for `sudo` in its secrets phase, `down` and `reset` need it to remove the rules.
 
 ---
 
@@ -216,10 +241,10 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 
 | Command | What it does |
 | --- | --- |
-| `sandcastle doctor` | Checks macOS, Apple silicon, `container` version, `bw` login, LiteLLM reachability |
-| `sandcastle init` | Writes `config.toml`, builds the image, records its digest |
-| `sandcastle up [path]` | Unlocks `bw` if needed, starts relay, creates network + volumes on first run, seeds the box's clone, starts box, opens browser |
-| `sandcastle down [path]` | Stops box and relay; keeps the home and workspace volumes |
+| `sandcastle doctor` | Checks macOS, Apple silicon, `container` version, `bw` login, LiteLLM reachability, the pf anchor line in `/etc/pf.conf` |
+| `sandcastle init` | Writes `config.toml`, builds the image, records its digest, adds the pf anchor line to `/etc/pf.conf` (sudo) |
+| `sandcastle up [path]` | Gets all secrets first, creates network + volumes on first run, starts box, starts relay, loads pf rules, seeds the box's clone, opens browser |
+| `sandcastle down [path]` | Stops box and relay, removes the pf rules; keeps the home and workspace volumes |
 | `sandcastle ls` | Lists boxes: repo, port, status, image digest |
 | `sandcastle fetch [path]` | Fetches the box's commits into the host repo under `refs/remotes/sandcastle/*`; the user merges and pushes with plain Git |
 | `sandcastle reset [path]` | Deletes box, network, home volume and workspace volume (warns about unfetched commits); host repo untouched |
@@ -227,11 +252,14 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 
 `up`, in order:
 1. Resolve repo root; derive box name from path.
-2. `bw unlock` if locked; resolve LiteLLM key into memory.
-3. Create internal network, home volume and workspace volume if missing; on first run the box clones the repo from the read-only source mount.
-4. Start relay on the network's host address and on `127.0.0.1:<port>`.
-5. `container run` with the flags from 2.3, dummy key, `HTTP_PROXY`/`HTTPS_PROXY`, and the random internal password.
-6. Wait for the UI to answer, then open the one-time login link on `http://127.0.0.1:<port>`.
+2. Secrets phase, the only step that may prompt: `sudo` for pf, `bw unlock` if locked, resolve every secret into memory (2.4).
+3. Create the internal network if missing. Create home and workspace volumes if missing and hand them to the box user (2.3).
+4. `container run` with the flags from 2.3, dummy key, proxy variables, and the random internal password. The entrypoint waits until the relay answers before it starts OpenCode.
+5. Now that the network's gateway address and bridge interface exist: bind the relay's box-side listeners on the gateway address, load the pf rules (2.6), and bind the UI gateway on `127.0.0.1:<port>`.
+6. On first run the box clones the repo from the read-only source mount.
+7. Wait for the UI to answer, then open the one-time login link on `http://127.0.0.1:<port>`.
+
+Steps 4 and 5 are in this order because the gateway address cannot be bound before a box runs (spike item 2).
 
 ---
 
@@ -241,6 +269,7 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 | --- | --- | --- |
 | One VM per box, no home mount | Reading `~/.ssh`, Keychain, other repos, Bitwarden data | Hypervisor escape (accepted) |
 | Internal network + relay as only exit | Arbitrary hosts, reverse shells, reaching the company network | Exfiltration via allowlisted hosts (keep list short) |
+| pf rules per box | Box reaching other services on the Mac; LAN devices reaching the box through the Mac | Window between box start and rule load (entrypoint waits); needs the anchor line in `/etc/pf.conf` |
 | No DNS in the box | DNS tunnelling | None known |
 | LLM key only in relay | Stealing the LiteLLM key | Spending budget while box runs (budget caps it) |
 | No Git credentials in box | Pushing to or deleting the user's remote repos | Exfiltrating repo content to GitHub or npm with an attacker-supplied token (accepted, see section 3) |
@@ -301,6 +330,8 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Agent config bundled in sandcastle (Q5) | One repo, one pin |
 | Invisible login confirmed (Q6) | See 2.2 |
 | pf rule limits the box to the relay's ports on the host (spike item 9 passed) | Spike item 1: a box on an internal network reaches any host service on `0.0.0.0`; costs root at `up`/`down` |
+| pf anchor as one line in `/etc/pf.conf`, checked by `doctor` | Clean namespace instead of squatting under `com.apple/*`; macOS updates may remove the line, so it is checked |
+| Build order: relay before the secrets module | The risky part is built and tested first; an environment variable supplies the key in the meantime |
 | Relay keeps its own one-time link; OpenCode 2.x pairing links are not used | Relay needs the cookie and Host/Origin checks anyway; no dependency on OpenCode's pairing |
 | All secrets are obtained in one phase at the start of `up`; no prompts afterwards | Manual setup once per session, full automation after; one master password prompt per `up` is fine |
 | OpenCode v2.2.7 from the GitHub release, pinned by SHA-256 | Owner wants 2.x; it is not published to npm |
@@ -317,7 +348,7 @@ Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 3 (default al
 Still open:
 
 2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected, and `github.com` reachable through a method-aware relay path, not a CONNECT tunnel.)
-7. Clone-and-fetch mechanism: is the proposal in 2.5 (read-only `.git` mount as source, `upload-pack` via exec for fetch) right, or should the relay proxy Git smart HTTP instead? Decide after the spike.
+7. Clone-and-fetch mechanism: is the proposal in 2.5 (read-only `.git` mount as source, `upload-pack` via exec for fetch) right, or should the relay proxy Git smart HTTP instead? The spike shows the proposal works as written (item 7). Recommendation: keep it; v0.1 implements it. Owner to confirm.
 
 Do not silently decide these. Ask the owner, or implement the proposal and flag it.
 
@@ -325,34 +356,33 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** design complete, nothing implemented, repo freshly created.
+**Status:** design verified by the shell spike; no Rust code yet. Work happens on the `spike` branch until v0.1.
 
-**Step 1: manual spike (about one hour, shell only, in `spike/`).** These assumptions about Apple `container` are unverified and decide whether the design works:
+**Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 
-- [x] A container on a `--internal` network can reach a listener on the host's address for that network, but not the internet. (Passed 2026-11-12, see `spike/NOTES.md`.)
-- [x] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake. (Passed 2026-11-12.)
-- [x] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder. (Passed 2026-11-12: npm through tinyproxy, model list through the forwarder with the key from Bitwarden. An `opencode run` round trip answered through the forwarder with two models.)
-- [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
-- [x] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume. (Passed 2026-11-12 with 2.2.7, after the volume ownership fix.)
-- [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).
-- [ ] Clone-and-fetch works: the box clones from a read-only mount of the host `.git`; the host fetches the box's commits through `container exec ... git upload-pack` into `refs/remotes/sandcastle/*`.
-- [ ] A non-root user in the box can read the read-only `.git` mount and write the named volumes (UID mapping).
-- [x] A pf rule limits the box to the relay's ports on the host (added and passed 2026-11-12; `spike/09-pf-host-isolation.sh`, needs sudo). Rules must go by interface, not subnet, to cover IPv6.
+- [x] 1. A box on an `--internal` network reaches a listener on the host's gateway address, not the internet.
+- [x] 2. A host listener binds the gateway address only and survives sleep/wake.
+- [x] 3. With `--no-dns` and proxy variables, npm installs through an allowlisting proxy and OpenCode answers a prompt through a plain HTTP forwarder with the key from Bitwarden.
+- [ ] 4. The host reaches port 4096 on the box. **Open:** the LAN-device check has not been done, and the Mac has IP forwarding on (see 2.6).
+- [x] 5. OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume.
+- [x] 6. Node `fetch`, npm, Git and Bun honour the proxy variables; without them they fail after a 20 s timeout.
+- [x] 7. Clone-and-fetch works as proposed in 2.5.
+- [x] 8. A non-root user reads the read-only `.git` mount and writes the volumes after the ownership fix.
+- [x] 9. A pf rule set by interface limits the box to the relay. **Open:** re-run with the added `block out` rule.
 
-Spike findings so far (details in `spike/NOTES.md`):
-- OpenCode is pinned to v2.2.7 from the GitHub release (owner decision 2026-11-12; 2.x is not on npm). In 2.x there is no `opencode web`: the UI and API come from `opencode serve`, the API requires auth and accepts Basic Auth with `OPENCODE_SERVER_PASSWORD`, and `opencode pair` issues its own one-time login links (owner decision: not used, the relay keeps its own one-time link and injects Basic Auth). Sections 2.2 and 2.3 still describe 1.x and are not rewritten yet.
-- A fresh named volume is root-owned, so the non-root box user cannot write it. Volumes need a one-off `chown` when sandcastle creates them.
-- A box on an internal network can reach every service on the Mac that listens on `0.0.0.0`, through the gateway address and the Mac's LAN address. Decision: close this with a pf rule.
-- The gateway address exists on the host only while a box is running on the network. The relay cannot bind the box-side address before `container run`, so steps 4 and 5 of `up` in section 4 must swap for that listener. Section 4 is not rewritten yet.
+The fallback (a proxy container on two networks instead of a host listener) is not needed.
 
-Fallback if the first two fail (not needed, both passed): a small proxy container attached to two networks (internal + default) instead of a host listener.
+**Build plan (agreed 2026-11-12):**
 
-**Roadmap:**
-1. Spike (above).
-2. v0.1: Rust CLI with `up`, `down`, `ls`, `fetch`, `reset`; relay with UI gateway, LLM key swap, CONNECT allowlist.
-3. v0.2: `log`, `doctor`; model list from LiteLLM; image rebuild with digest pinning.
-4. v0.3: optional relay-injected secrets (Brave Search, GitHub token if Q2 = yes).
-5. Later: background daemon and a small UI (list boxes, start/stop/open).
+1. **Skeleton that starts a box.** Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
+2. **Relay**, in three parts, each tested before the next: egress proxy (CONNECT allowlist, log of refused hosts); LLM relay (key swap, streaming); UI gateway (one-time link, cookie, Host and Origin checks, Basic Auth injection, streaming pass-through). The key comes from an environment variable until step 3. Done when the owner can chat in the browser and tests cover allowlist matching, Host/Origin checks and "key never in logs or errors".
+3. **Secrets phase and pf.** Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
+4. **Git and release.** `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
+
+**After v0.1:**
+- v0.2: `log`, `doctor`; model list from the gateway's `/v1/models`; image rebuild with digest pinning.
+- v0.3: optional relay-injected secrets (Brave Search, GitHub token if Q2 = yes).
+- Later: background daemon and a small UI (list boxes, start/stop/open).
 
 ---
 

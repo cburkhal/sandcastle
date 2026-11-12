@@ -9,14 +9,14 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | 1 | Internal network: box reaches host listener, not the internet | `01-internal-network.sh` | **pass** (2026-11-12) |
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
 | 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **pass**, including an `opencode run` round trip (2026-11-12) |
-| 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | written, not run |
+| 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | host to box: **pass**. LAN isolation: **open**, IP forwarding is on (2026-11-12) |
 | 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | **pass**, after a volume ownership fix (2026-11-12) |
-| 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
-| 7 | Clone from read-only `.git` mount; fetch via `container exec ... git upload-pack` | `07-clone-and-fetch.sh` | written, not run |
-| 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | written, not run; item 5 already shows fresh volumes are root-owned |
+| 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | **pass** (2026-11-12) |
+| 7 | Clone from read-only `.git` mount; fetch via `container exec ... git upload-pack` | `07-clone-and-fetch.sh` | **pass** (2026-11-12) |
+| 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | **pass**, with the volume ownership fix (2026-11-12) |
 | 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | **pass** (2026-11-12, run by the owner, needs sudo) |
 
-Scripts 4, 6, 7 and 8 have only been syntax-checked. Expect to fix them on first run.
+All nine scripts have run. Still open: the LAN-device half of item 4, and a re-run of item 9 with the added `block out` rule (needs sudo).
 
 ## Verdict on the fallback (items 1 and 2)
 
@@ -124,6 +124,68 @@ Passed with OpenCode 2.2.7, after one fix.
 - Auth results as in the version section above.
 
 Finding (answers most of item 8): **a fresh named volume is owned by root (0:0, mode 755), so the non-root user cannot write it.** OpenCode then exits at start with `EACCES: permission denied, mkdir '/home/agent/.local'`. `container volume create` has no ownership option. Fix used in the spike (`volume_init` in `lib.sh`): once per volume, a one-off root container with no network and only `CAP_CHOWN` runs `chown 1001:1001` on the volume root. sandcastle needs the same step when it creates volumes.
+
+## Item 4: UI port reachability
+
+Host to box passed. LAN isolation is not shown yet.
+
+- The host fetched a page from the box at `<box-ip>:4096` over the internal network, with no port published.
+- Nothing listens on port 4096 on `127.0.0.1` or on the Mac's LAN address.
+
+Finding: **`net.inet.ip.forwarding` is 1 on this Mac**, so it routes between interfaces. A device on the LAN that adds a route to the box subnet through the Mac could then reach the box directly. The pf rules from item 9 did not cover this, because they only filter traffic coming in from the box. Mitigations:
+
+1. Added to rule set B in item 9: `block return out quick on <bridge> all`, after the rule that lets the host's gateway address reach port 4096. Forwarded LAN traffic leaves through the bridge with a LAN source address and is dropped. **Not run yet** (needs sudo).
+2. OpenCode's API needs the per-run password anyway (item 5), so this is a second layer, not the only one.
+
+Not known: who turned forwarding on. `container` or vmnet NAT for the default network is the likely cause; sandcastle should not rely on it being off.
+
+Manual check still to do, with a second device on the LAN:
+
+```
+./04-ui-port-reachability.sh hold      # prints the two curl commands to try from the other device
+```
+
+## Item 6: proxy variables
+
+All checks passed (Node 22, npm 10.9, Git from Debian bookworm, Bun 1.4.4).
+
+| Tool | No proxy variables | With `HTTP(S)_PROXY` |
+| --- | --- | --- |
+| Node built-in `fetch` | fails after 20 s | still fails; works only with `NODE_USE_ENV_PROXY=1` (1 s) |
+| npm | fails after 20 s | works (1 s) |
+| Git over HTTPS | fails after 20 s | works (1 s); a non-allowlisted host fails at once |
+| Bun `fetch` and `bun add` | fails after 20 s | works (1 s) |
+
+Findings:
+
+1. Set all of `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, `no_proxy` and `NODE_USE_ENV_PROXY=1` in the box.
+2. Tools that ignore the proxy do fail, but only after 20 s: with `--no-dns` the box still has `1.1.1.1` as resolver (item 3) and waits for it. It is a timeout, not a hang. To make it fail fast, give the box a resolver address that refuses at once (for example `--dns <gateway>`, where the pf rule answers with a reset). Not tested.
+3. Installing the standalone `bun` package needed only `registry.npmjs.org`.
+
+## Item 7: clone-and-fetch
+
+All checks passed. The mechanism proposed in CLAUDE.md 2.5 works as written.
+
+- **Seed:** the box cloned from the host `.git`, mounted read-only at `/source.git`. The untracked `.env` in the host working tree did not reach the box, and the box cannot write to the mount.
+- **Fetch:** the host ran `git fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The box's commit arrived under `refs/remotes/sandcastle/agent/work`, objects pass `git fsck`, and the host's branch and working tree were untouched.
+- **Nothing executable crossed over:** the box had planted a `post-checkout` hook and `core.fsmonitor` in its own clone; neither exists in the host repo after the fetch.
+- **Host to box:** a new host commit was visible to `git fetch origin` in the box straight away.
+
+Findings:
+
+1. The mount root appears in the box as owned by root, so Git refuses it ("dubious ownership") until `safe.directory` is set for `/source.git`. sandcastle sets that in the box's Git config.
+2. `ext::` transport is off by default in Git. The host enables it for that one command with `-c protocol.ext.allow=always`; nothing is written to the host's Git config.
+3. `container exec` needs `-i` here, as in item 3.
+4. Not covered: a repo whose `.git/config` has credentials in a remote URL. The clone copies only `remote.origin.url` of the box's own clone (the mount path), but the mounted `config` file itself is readable in the box. The check in CLAUDE.md 2.5 ("no credentials in remote URLs before mounting") is still needed.
+
+## Item 8: non-root user, mount and volumes
+
+Passed with the ownership fix.
+
+- **Read-only `.git` mount:** readable by uid 1001 and by an arbitrary uid (4242), even with the host directory at mode 700. Files show up as owned by whichever user looks at them; the mount root shows as root. Nobody in the box can write it. So host file permissions do not restrict who in the box can read a mount: whatever is mounted is readable by every box user.
+- **Fresh named volumes:** owned by root (0:0, mode 755); uid 1001 cannot write them. After the one-off `chown` (see item 5) uid 1001 can, another uid cannot, and ownership persists across boxes.
+
+Finding: **a named volume can be attached to only one running container.** A second container with the same volume fails to start ("The storage device attachment is invalid"). So the `chown` step must run before the box starts, and nothing else can mount the workspace volume while the box is up. That is another reason for fetching through `container exec` and not through a helper container.
 
 ## Item 9: pf rule
 
