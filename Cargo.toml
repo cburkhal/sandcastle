@@ -1,0 +1,15 @@
+[package]
+name = "sandcastle"
+version = "0.1.0"
+edition = "2021"
+description = "One OpenCode instance per Git repo, each in its own Apple container VM"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "signal", "time"] }
+toml = "0.8"

@@ -2,14 +2,15 @@
 
 One OpenCode instance per Git repo, each in its own Apple `container` VM on macOS. The LLM key and Git credentials never enter the VM.
 
-Status: design plus a shell spike. No Rust code yet. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
+Status: early. The design is verified by a shell spike, and the CLI can start and stop a hardened box. The relay is not built yet, so the agent in the box has no LLM and no network access. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
 
 ## Requirements
 
 - Apple silicon Mac, macOS 26 or newer (tested on macOS 27.0.1).
 - Apple `container` (tested with 1.7.1).
 - Bitwarden CLI `bw` (tested with 2026.10.1).
-- Homebrew, for `bw` and for the spike's proxy.
+- Homebrew, for `bw`, Rust and the spike's proxy.
+- Rust, to build sandcastle (`brew install rust`; tested with 1.99.1).
 - Admin rights: the pf rule that keeps the box away from host services needs `sudo`.
 
 ## Install Apple `container`
@@ -102,6 +103,20 @@ OpenCode is pinned to an exact version and taken from the GitHub release, not fr
 - OpenCode 2.x is not published to npm. `opencode-ai` on npm stops at 1.19.5, and GitHub still marks v1.19.5 as "latest".
 - The image build downloads `opencode-linux-arm64.tar.gz` and fails unless its SHA-256 matches the pinned value from the release's `SHA256SUMS` file. See `spike/Containerfile`.
 - To move to another release, change `OPENCODE_VERSION` and `OPENCODE_SHA256` together and re-run the spike. Do not go below 2.2.6 (it added origin checks on the server API).
+
+## Build and use
+
+```
+cargo build --release
+./target/release/sandcastle init      # writes ~/.config/sandcastle/config.toml, builds the box image
+cd <a Git repository>
+sandcastle up                         # starts the box for this repo; Ctrl-C stops it
+sandcastle ls                         # boxes, status, address
+sandcastle down                       # stop the box from another terminal; volumes are kept
+sandcastle reset                      # delete the box with its network and volumes
+```
+
+What exists on the Mac afterwards: the config file, state under `~/Library/Application Support/sandcastle/`, the image `sandcastle-opencode:<version>`, and per repo one network and two volumes named after the box. `reset` removes the per-repo parts.
 
 ## Running the spike
 

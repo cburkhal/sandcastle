@@ -1,0 +1,27 @@
+# sandcastle box image for the OpenCode agent. Built by `sandcastle init`.
+# Everything is pinned: the base image by digest, OpenCode by version and
+# SHA-256 of the GitHub release tarball. arm64 only (Apple silicon).
+
+# renovate: datasource=docker depName=debian versioning=docker
+ARG BASE=docker.io/library/debian:stable-slim@sha256:fbfb4059d2127120aa05b6e6064523d2102552f0cf0026ddf0701c12f1f8f3e0
+
+FROM ${BASE} AS fetch
+# renovate: datasource=github-releases depName=anomalyco/opencode
+ARG OPENCODE_VERSION=2.2.7
+# SHA-256 of opencode-linux-arm64.tar.gz from the release's SHA256SUMS file.
+ARG OPENCODE_SHA256=c1682057f0815cb2abdd6e00305f1146ebaf1c167f0335cdb74ddc80008120e7
+ADD --checksum=sha256:${OPENCODE_SHA256} \
+    https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz \
+    /tmp/opencode.tar.gz
+RUN tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode
+
+FROM ${BASE}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git ripgrep nodejs npm \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 1001 --shell /bin/bash agent \
+ && mkdir /workspace && chown agent:agent /workspace
+COPY --from=fetch /usr/local/bin/opencode /usr/local/bin/opencode
+
+USER agent
+WORKDIR /workspace

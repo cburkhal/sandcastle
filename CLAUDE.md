@@ -6,7 +6,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`), no Rust code yet.** The next step is v0.1 (see "Current status and next steps").
+- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); build step 1 of 4 done** (a box starts, no relay yet). See "Current status and next steps".
 
 ---
 
@@ -194,9 +194,9 @@ sandcastle/
   CLAUDE.md
   src/main.rs                       CLI entry (clap)
   src/core/                         box lifecycle, state, config loading
-  src/relay/                        UI gateway, LLM relay, egress proxy
-  src/secrets/mod.rs                trait SecretStore
-  src/secrets/bitwarden.rs
+  src/relay/                        UI gateway, LLM relay, egress proxy   (build step 2)
+  src/secrets/mod.rs                trait SecretStore            (build step 3)
+  src/secrets/bitwarden.rs                                       (build step 3)
   src/agent/mod.rs                  trait Agent
   src/agent/opencode/               impl, Containerfile, config template
   src/runtime/mod.rs                trait SandboxRuntime + BoxSpec
@@ -355,7 +355,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** design verified by the shell spike; no Rust code yet. Work happens on the `spike` branch until v0.1.
+**Status:** design verified by the shell spike; build step 1 is done. Work happens on the `spike` branch until v0.1.
 
 **Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 
@@ -373,7 +373,7 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 
 **Build plan (agreed 2026-11-12):**
 
-1. **Skeleton that starts a box.** Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
+1. **Skeleton that starts a box. Done 2026-11-12.** Checked by hand: `init` builds the image; `up` starts a box as uid 1001 with read-only root, no capabilities and no internet, UI on the box address only, API answering 401; Ctrl-C and `down` stop it; a second `up` keeps the volumes; `reset` removes everything. The secrets trait is not in the tree yet; it arrives with step 3. Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
 2. **Relay**, in three parts, each tested before the next: egress proxy (CONNECT allowlist, log of refused hosts); LLM relay (key swap, streaming); UI gateway (one-time link, cookie, Host and Origin checks, Basic Auth injection, streaming pass-through). The key comes from an environment variable until step 3. Done when the owner can chat in the browser and tests cover allowlist matching, Host/Origin checks and "key never in logs or errors".
 3. **Secrets phase and pf.** Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
 4. **Git and release.** `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
