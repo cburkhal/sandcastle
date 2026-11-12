@@ -120,6 +120,8 @@ Why the login stays (even though "all is local"): an unauthenticated OpenCode se
 3. The box gets only a dummy key and the relay's address.
 4. `sandcastle down` stops the relay; the key is gone.
 
+Rule set by the owner (2026-11-12): **all secrets are obtained at the start of the session, then everything runs unattended.** `up` begins with one secrets phase: Bitwarden login if needed, one vault unlock (master password), and resolving every secret reference the session will need, including any added later (for example a GitHub token). Nothing may prompt after that phase. One master password prompt per `up` is accepted. The same applies to other credentials `up` needs, such as `sudo` for the pf rule.
+
 The LiteLLM virtual key must carry a monthly budget, a model allowlist and an expiry, so even a leak is cheap. The user confirmed LiteLLM supports per-user virtual keys.
 
 ### 2.5 Git
@@ -300,6 +302,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Invisible login confirmed (Q6) | See 2.2 |
 | pf rule limits the box to the relay's ports on the host (spike item 9 passed) | Spike item 1: a box on an internal network reaches any host service on `0.0.0.0`; costs root at `up`/`down` |
 | Relay keeps its own one-time link; OpenCode 2.x pairing links are not used | Relay needs the cookie and Host/Origin checks anyway; no dependency on OpenCode's pairing |
+| All secrets are obtained in one phase at the start of `up`; no prompts afterwards | Manual setup once per session, full automation after; one master password prompt per `up` is fine |
 | OpenCode v2.2.7 from the GitHub release, pinned by SHA-256 | Owner wants 2.x; it is not published to npm |
 | Modules for secrets, agent, runtime | Replaceable later at minimal cost; no speculative adapters |
 | Scope: owner only | Other roles dropped from scope |
@@ -328,7 +331,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 - [x] A container on a `--internal` network can reach a listener on the host's address for that network, but not the internet. (Passed 2026-11-12, see `spike/NOTES.md`.)
 - [x] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake. (Passed 2026-11-12.)
-- [x] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder. (Passed 2026-11-12: npm through tinyproxy, model list through the forwarder with the key from Bitwarden. An `opencode run` round trip is still to do.)
+- [x] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder. (Passed 2026-11-12: npm through tinyproxy, model list through the forwarder with the key from Bitwarden. An `opencode run` round trip answered through the forwarder with two models.)
 - [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
 - [x] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume. (Passed 2026-11-12 with 2.2.7, after the volume ownership fix.)
 - [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).

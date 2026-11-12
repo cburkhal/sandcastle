@@ -8,7 +8,7 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | --- | --- | --- | --- |
 | 1 | Internal network: box reaches host listener, not the internet | `01-internal-network.sh` | **pass** (2026-11-12) |
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
-| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **pass** for proxy install and gateway access; `opencode run` round trip not tested yet (2026-11-12) |
+| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **pass**, including an `opencode run` round trip (2026-11-12) |
 | 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | written, not run |
 | 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | **pass**, after a volume ownership fix (2026-11-12) |
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
@@ -79,7 +79,7 @@ Passed, run by the owner on 2026-11-12 with `BW_ITEM=<item name>`.
 - The forwarder bound to the gateway address, swapped the box's dummy key for the real one and forwarded over HTTPS.
 - The box, with `--no-dns` and no route to the internet, listed the gateway's models through `http://<gateway>:<port>/v1/models`: 47 model ids came back.
 
-### Not tested yet: `opencode run` round trip
+### `opencode run` round trip
 
 ```
 BW_ITEM=<item name> OPENCODE_MODEL="<id> <id>" ./03-proxy-install-llm.sh
@@ -87,7 +87,9 @@ BW_ITEM=<item name> OPENCODE_MODEL="<id> <id>" ./03-proxy-install-llm.sh
 
 The owner's first attempt failed with `Model unavailable: relay/<id>`. Cause: a bug in the script, not the model or the gateway. `container exec` without `-i` does not forward stdin, so the OpenCode config written through a heredoc arrived as an empty file and the `relay` provider did not exist. Fixed with `-i`.
 
-Dry run against a fake gateway after the fix (2026-11-12): OpenCode 2.2.7 lists `relay/<id>` and sends `POST /v1/chat/completions` to the forwarder. So the config shape (`provider.<name>` with `npm: @ai-sdk/openai-compatible`, `options.baseURL`, `options.apiKey`, `models`) and `OPENCODE_CONFIG` both work in 2.x. Only the answer from the real gateway is left to see.
+Dry run against a fake gateway after the fix (2026-11-12): OpenCode 2.2.7 lists `relay/<id>` and sends `POST /v1/chat/completions` to the forwarder. So the config shape (`provider.<name>` with `npm: @ai-sdk/openai-compatible`, `options.baseURL`, `options.apiKey`, `models`) and `OPENCODE_CONFIG` both work in 2.x. 
+
+Real run by the owner (2026-11-12): **passed.** OpenCode 2.2.7 in the box answered `pong` through the forwarder with two models. The box had a dummy key, no DNS and no internet route; the proxy log shows no host other than the refused ones.
 
 Findings from that run:
 
