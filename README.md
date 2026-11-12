@@ -62,7 +62,7 @@ bw login
    - a monthly budget,
    - a model allowlist,
    - an expiry date.
-2. In Bitwarden, create a login item (for example "sandcastle LiteLLM") and put the key into the **password** field.
+2. In Bitwarden, create an item of type **Login** (for example "sandcastle LiteLLM") and put the key into the **password** field. Leave the username empty. Not a secure note: the password field is masked in the apps and is what `bw get password` and the `bitwarden://<item-id>/password` reference read.
 3. Note the item ID:
 
    ```
@@ -80,13 +80,11 @@ LITELLM_KEY="$(bw get password <item-id>)" some-command
 
 ## OpenCode version
 
-OpenCode is pinned to an exact version. The spike uses `opencode-ai` **1.19.5**, which was the `latest` release on npm on 2026-11-12. There is no 2.x release of the npm package: the highest published version is 1.19.5, and the other tags (`next`, `beta`, `dev`, `tui-v2`) are `0.0.0-...` snapshot builds, not releases. Check with:
+OpenCode is pinned to an exact version and taken from the GitHub release, not from npm: **v2.2.7** (https://github.com/anomalyco/opencode/releases/tag/v2.2.7).
 
-```
-npm view opencode-ai dist-tags.latest
-```
-
-Do not use versions before 1.0.216 (CVE-2026-22812).
+- OpenCode 2.x is not published to npm. `opencode-ai` on npm stops at 1.19.5, and GitHub still marks v1.19.5 as "latest".
+- The image build downloads `opencode-linux-arm64.tar.gz` and fails unless its SHA-256 matches the pinned value from the release's `SHA256SUMS` file. See `spike/Containerfile`.
+- To move to another release, change `OPENCODE_VERSION` and `OPENCODE_SHA256` together and re-run the spike. Do not go below 2.2.6 (it added origin checks on the server API).
 
 ## Running the spike
 

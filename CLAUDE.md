@@ -299,6 +299,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Agent config bundled in sandcastle (Q5) | One repo, one pin |
 | Invisible login confirmed (Q6) | See 2.2 |
 | pf rule limits the box to the relay's ports on the host (spike item 9 passed) | Spike item 1: a box on an internal network reaches any host service on `0.0.0.0`; costs root at `up`/`down` |
+| OpenCode v2.2.7 from the GitHub release, pinned by SHA-256 | Owner wants 2.x; it is not published to npm |
 | Modules for secrets, agent, runtime | Replaceable later at minimal cost; no speculative adapters |
 | Scope: owner only | Other roles dropped from scope |
 | Name: sandcastle | Chosen by owner |
@@ -328,13 +329,15 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 - [x] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake. (Passed 2026-11-12.)
 - [ ] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder.
 - [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
-- [ ] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume.
+- [x] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume. (Passed 2026-11-12 with 2.2.7, after the volume ownership fix.)
 - [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).
 - [ ] Clone-and-fetch works: the box clones from a read-only mount of the host `.git`; the host fetches the box's commits through `container exec ... git upload-pack` into `refs/remotes/sandcastle/*`.
 - [ ] A non-root user in the box can read the read-only `.git` mount and write the named volumes (UID mapping).
 - [x] A pf rule limits the box to the relay's ports on the host (added and passed 2026-11-12; `spike/09-pf-host-isolation.sh`, needs sudo). Rules must go by interface, not subnet, to cover IPv6.
 
 Spike findings so far (details in `spike/NOTES.md`):
+- OpenCode is pinned to v2.2.7 from the GitHub release (owner decision 2026-11-12; 2.x is not on npm). In 2.x there is no `opencode web`: the UI and API come from `opencode serve`, the API requires auth and accepts Basic Auth with `OPENCODE_SERVER_PASSWORD`, and `opencode pair` issues its own one-time login links. Sections 2.2 and 2.3 still describe 1.x and are not rewritten yet.
+- A fresh named volume is root-owned, so the non-root box user cannot write it. Volumes need a one-off `chown` when sandcastle creates them.
 - A box on an internal network can reach every service on the Mac that listens on `0.0.0.0`, through the gateway address and the Mac's LAN address. Decision: close this with a pf rule.
 - The gateway address exists on the host only while a box is running on the network. The relay cannot bind the box-side address before `container run`, so steps 4 and 5 of `up` in section 4 must swap for that listener. Section 4 is not rewritten yet.
 

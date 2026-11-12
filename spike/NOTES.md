@@ -2,7 +2,7 @@
 
 Results of the manual spike from CLAUDE.md section 9. One script per checklist item.
 
-Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b460), test image `debian:stable-slim`.
+Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b460). Test images: `debian:stable-slim`, and from item 5 on the spike image with OpenCode 2.2.7 from the GitHub release.
 
 | # | Item | Script | Status |
 | --- | --- | --- | --- |
@@ -10,13 +10,13 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
 | 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **install: pass, LiteLLM: not tested yet** (2026-11-12) |
 | 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | written, not run |
-| 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | written, not run |
+| 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | **pass**, after a volume ownership fix (2026-11-12) |
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
 | 7 | Clone from read-only `.git` mount; fetch via `container exec ... git upload-pack` | `07-clone-and-fetch.sh` | written, not run |
-| 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | written, not run |
+| 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | written, not run; item 5 already shows fresh volumes are root-owned |
 | 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | **pass** (2026-11-12, run by the owner, needs sudo) |
 
-Scripts 4 to 8 have only been syntax-checked. Expect to fix them on first run.
+Scripts 4, 6, 7 and 8 have only been syntax-checked. Expect to fix them on first run.
 
 ## Verdict on the fallback (items 1 and 2)
 
@@ -69,15 +69,44 @@ Findings:
 1. `--no-dns` does not leave the box without a resolver. `/etc/resolv.conf` then holds `nameserver 1.1.1.1` and `1.0.0.1`. They are unreachable on the internal network, so nothing leaks, but lookups by tools that ignore the proxy will time out instead of failing at once. Item 6 measures that. An empty resolver file or `--dns` pointing at an address that refuses quickly may be better.
 2. Node prints an `EnvHttpProxyAgent is experimental` warning with `NODE_USE_ENV_PROXY=1` (Node 22). Harmless, but it is noise in every npm run.
 
+Since then OpenCode moved to 2.2.7 from the GitHub release, baked into the spike image (see "OpenCode version" below). The script no longer installs OpenCode from npm; it installs a small package instead, because npm through the proxy still matters for plugins and project dependencies. That changed script has not been run yet.
+
 ### Not tested yet: LiteLLM
 
-The second half needs the real LiteLLM host and a key, which this session does not have. Run:
+The second half needs the real LiteLLM host and a key from Bitwarden. Run:
 
 ```
-OPENCODE_VERSION=1.19.5 LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
+LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
 ```
 
-`OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 1.19.5.
+`OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 2.x.
+
+## OpenCode version: 2.2.7 from the GitHub release
+
+Owner decision (2026-11-12): take OpenCode from the GitHub release, at least 2.0.
+
+- OpenCode 2.x is not on npm (`opencode-ai` stops at 1.19.5) and GitHub still marks v1.19.5 as "latest". The 2.x line exists as GitHub releases only for 2.2.0 to 2.2.7; 2.0.x and 2.1.x are tags without release assets.
+- Picked **v2.2.7** (2026-11-10), the newest release. Nothing upstream marks one 2.2.x as more stable than another: every release mixes features and fixes. 2.2.6 or newer is wanted because 2.2.6 added origin checks on `/api/*` and stricter fetch rules. The alternative is 2.2.5, which went 7 days without a follow-up release, but it lacks those.
+- The Containerfile downloads `opencode-linux-arm64.tar.gz` with `ADD --checksum`. The SHA-256 matches both the release's `SHA256SUMS` file and the digest GitHub reports for the asset.
+
+What is different in 2.x, found by running it (not from documentation):
+
+1. **There is no `opencode web`.** The web UI and API come from `opencode serve --hostname .. --port ..`. CLAUDE.md 2.3 still names `opencode web`.
+2. **The API requires authentication.** `/api/*` answers 401 without credentials and with a wrong password, and accepts Basic Auth with user `opencode` and `OPENCODE_SERVER_PASSWORD`. The UI shell on `/` is a static page served without authentication.
+3. **OpenCode has its own one-time login links.** `opencode pair` prints `http://127.0.0.1:<port>/auth/connect/<token>`, valid once and for 5 minutes. This overlaps with the relay's planned one-time link. Whether the relay should reuse it or keep injecting Basic Auth is a design question for the owner.
+4. **There is a background service.** `opencode pair` and `opencode run` start or use a background server on a random port unless `--standalone` or `--server` is given. In the box only `opencode serve` should run; `pair --remote` can expose a server to the internet through a tunnel, which the egress allowlist must keep blocked.
+
+## Item 5: read-only root, tmpfs, volumes
+
+Passed with OpenCode 2.2.7, after one fix.
+
+- `opencode serve` runs with `--read-only`, `--tmpfs /tmp`, `--cap-drop ALL`, `--no-dns`, 2 CPUs, 2 GB, as uid 1001, with a home volume and a workspace volume. All capability sets are empty.
+- `/usr/local` and `/etc` are not writable; `/tmp` and both volumes are.
+- OpenCode writes only below home: `.local/share/opencode`, `.local/state/opencode`, `.cache/opencode`, `.config/opencode`.
+- With no proxy and no network it starts cleanly: no failed downloads in the log.
+- Auth results as in the version section above.
+
+Finding (answers most of item 8): **a fresh named volume is owned by root (0:0, mode 755), so the non-root user cannot write it.** OpenCode then exits at start with `EACCES: permission denied, mkdir '/home/agent/.local'`. `container volume create` has no ownership option. Fix used in the spike (`volume_init` in `lib.sh`): once per volume, a one-off root container with no network and only `CAP_CHOWN` runs `chown 1001:1001` on the volume root. sandcastle needs the same step when it creates volumes.
 
 ## Item 9: pf rule
 
@@ -114,9 +143,9 @@ Costs of the pf approach:
 ```
 ./01-internal-network.sh
 ./02-gateway-bind.sh [hold|check]
-OPENCODE_VERSION=<exact> [LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id>] ./03-proxy-install-llm.sh
+[LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id>] ./03-proxy-install-llm.sh
 ./04-ui-port-reachability.sh [hold]
-OPENCODE_VERSION=<exact> ./05-readonly-root.sh      # also builds the spike image used by 6, 7, 8
+./05-readonly-root.sh
 ./06-proxy-variables.sh
 ./07-clone-and-fetch.sh
 ./08-uid-mapping.sh
@@ -124,6 +153,7 @@ OPENCODE_VERSION=<exact> ./05-readonly-root.sh      # also builds the spike imag
 ```
 
 - Items 3 and 6 need `tinyproxy` on the host. It was installed with `brew install tinyproxy` on 2026-11-12; remove it with `brew uninstall tinyproxy` after the spike.
+- Items 3 and 5 to 8 use the spike image; the first script that needs it builds it from `Containerfile`.
 - Item 3 needs the LiteLLM host and key in the environment. Do not put them in a file in this repo.
 - Every run is copied to `spike/.state/<script>.log`.
 - Each script removes its own boxes, volumes and the `sc-spike` network on exit. Scratch files go to `spike/.state/` (git-ignored).

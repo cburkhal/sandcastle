@@ -70,6 +70,24 @@ box_http() {
 }
 host_tcp() { nc -z -G 3 "$1" "$2"; }
 
+# Build the spike image (OpenCode from the GitHub release, see Containerfile) if missing.
+ensure_image() {
+  container image inspect "$SPIKE_IMAGE" >/dev/null 2>&1 && return 0
+  container build -t "$SPIKE_IMAGE" -f "$SPIKE_DIR/Containerfile" "$SPIKE_DIR"
+}
+
+# New named volumes are owned by root (0:0, mode 755), so the non-root box user
+# cannot write them. Hand them to the box user once, with a one-off root
+# container that has no network and only CAP_CHOWN.
+volume_init() {
+  local v
+  for v in "$@"; do
+    container volume create "$v" >/dev/null
+    container run --rm -u 0 --cap-drop ALL --cap-add CAP_CHOWN --network none -v "$v:/v" "$SPIKE_IMAGE" \
+      chown "$BOX_UID:$BOX_UID" /v >/dev/null
+  done
+}
+
 # --- host listener -----------------------------------------------------
 # start_listener BIND PORT TOKEN -> sets LISTENER_PID; returns 1 if it cannot bind.
 start_listener() {

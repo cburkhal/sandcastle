@@ -1,14 +1,26 @@
-# Spike image for items 5 to 8. NOT the v1 image: tags instead of digests, and
-# the Node base image instead of debian:stable-slim plus Node (CLAUDE.md 2.3).
-# Build: container build --build-arg OPENCODE_VERSION=<exact> -t sc-spike-opencode:dev -f Containerfile .
+# Spike image for items 3 and 5 to 8. NOT the v1 image: the base is a tag, not
+# a digest, and it is the Node image instead of debian:stable-slim plus Node
+# (CLAUDE.md 2.3).
+#
+# OpenCode comes from the GitHub release, pinned by version and SHA-256. The
+# checksum is the one in the release's SHA256SUMS file; the build fails if the
+# download does not match it.
+# Build: container build -t sc-spike-opencode:dev -f Containerfile .
 FROM docker.io/library/node:22-bookworm-slim
 
-ARG OPENCODE_VERSION
+# renovate: datasource=github-releases depName=anomalyco/opencode
+ARG OPENCODE_VERSION=2.2.7
+ARG OPENCODE_SHA256=c1682057f0815cb2abdd6e00305f1146ebaf1c167f0335cdb74ddc80008120e7
+
+ADD --checksum=sha256:${OPENCODE_SHA256} \
+    https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz \
+    /tmp/opencode.tar.gz
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ripgrep ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && npm install -g "opencode-ai@${OPENCODE_VERSION}" \
- && npm cache clean --force \
+ && tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+ && rm /tmp/opencode.tar.gz \
  && useradd --create-home --uid 1001 --shell /bin/bash agent \
  && mkdir /workspace && chown agent:agent /workspace
 
