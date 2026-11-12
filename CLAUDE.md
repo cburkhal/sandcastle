@@ -4,7 +4,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 
 - Repo: https://github.com/cburkhal/sandcastle
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
-- This file is newer than the design doc where they differ (clone-and-fetch, no `github.com` in the allowlist).
+- This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount).
 - Status as of 2026-11-12: **design only, no code yet.** The next step is the manual spike (see "Current status and next steps").
 
 ---
@@ -66,7 +66,7 @@ macOS host                                   Apple container VM (one per repo)
 +---|----------------|-----------+
     | HTTPS + real key           | CONNECT (allowlist only)
     v                            v
- LiteLLM (company gateway)    Allowlisted hosts (npm registry only by default)
+ LiteLLM (company gateway)    Allowlisted hosts (npm registry, GitHub)
 ```
 
 The host repo is never writable from the box. The agent works on its own clone; the host pulls commits out with `sandcastle fetch` (see 2.5).
@@ -125,7 +125,7 @@ The LiteLLM virtual key must carry a monthly budget, a model allowlist and an ex
 
 Model: clone-and-fetch. The agent never writes to the host repo, so nothing it puts into `.git` (hooks, `core.fsmonitor`, `core.pager`, `diff.external`, `core.sshCommand`) can run on the Mac, whichever Git command or editor integration touches the host repo.
 
-- The box works on its own clone in the `/workspace` volume. It can commit but has no Git credentials and no route to GitHub, so it cannot push.
+- The box works on its own clone in the `/workspace` volume. It can commit but has no Git credentials, so it cannot push to the user's remotes.
 - `sandcastle fetch` brings the box's commits into the host repo under `refs/remotes/sandcastle/*`. Fetching from an untrusted repo is safe; checking out or merging the result is the human review gate.
 - The user reviews, merges and pushes with plain Git on macOS.
 - Tradeoff accepted by the owner: the agent's working tree cannot be opened live in a macOS editor. Uncommitted work in the box is invisible to the host until committed and fetched.
@@ -194,10 +194,10 @@ version = "<pinned>"
 kind = "apple-container"
 
 [egress]
-allow = ["registry.npmjs.org"]
+allow = ["registry.npmjs.org", "github.com", "codeload.github.com"]
 ```
 
-`github.com` is deliberately not in the default list. A CONNECT tunnel is opaque: the relay sees the host, not the method or credentials, so "read-only GitHub" cannot be enforced and an injected prompt could push repo content to an attacker's repo with an attacker-supplied token. Add it per box only when needed. The same weakness applies to `registry.npmjs.org` (`npm publish` with a foreign token); this is accepted for now.
+`github.com` and `codeload.github.com` are in the default list because npm dependencies with Git URLs and tools that download release binaries need them. **Known and accepted risk:** a CONNECT tunnel is opaque. The relay sees the host, not the method or credentials, so "read-only GitHub" cannot be enforced. An injected prompt could push repo content to an attacker's repo with an attacker-supplied token. The same applies to `registry.npmjs.org` (`npm publish` with a foreign token). Closing this would need a method-aware relay path (TLS termination for these hosts, GET and `git-upload-pack` only); not planned for v1.
 
 Allowlist changes come only from host config. A file inside the repo must never be able to widen its own network access.
 
@@ -240,7 +240,7 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 | Internal network + relay as only exit | Arbitrary hosts, reverse shells, reaching the company network | Exfiltration via allowlisted hosts (keep list short) |
 | No DNS in the box | DNS tunnelling | None known |
 | LLM key only in relay | Stealing the LiteLLM key | Spending budget while box runs (budget caps it) |
-| No Git credentials in box, `github.com` not allowlisted | Pushing/deleting remote repos; exfiltrating the repo to GitHub with a foreign token | Returns if `github.com` is added to a box's allowlist |
+| No Git credentials in box | Pushing to or deleting the user's remote repos | Exfiltrating repo content to GitHub or npm with an attacker-supplied token (accepted, see section 3) |
 | Clone-and-fetch: host repo never writable from the box | Agent-written hooks and `.git/config` keys running on macOS | Fetched content once checked out (editor tasks, Makefiles, build scripts) |
 | Read-only config mount | Agent rewriting its own config, prompts, MCP servers | None |
 | Read-only root, `cap-drop ALL`, non-root | Persisting outside the volumes | Persistence in home and workspace volumes until `reset` |
@@ -292,7 +292,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | No published port; UI served by relay | Lets the relay enforce Host/Origin checks |
 | Clone-and-fetch instead of a read-write repo mount | Agent-writable `.git/config` runs code on any host Git command, not only on push; owner does not need live editing on macOS |
 | `sandcastle fetch`, then manual merge and push (agent PRs pending Q2) | No Git creds in box; human review gate |
-| `github.com` dropped from the default allowlist | CONNECT cannot enforce read-only; exfiltration with a foreign token |
+| `github.com` and `codeload.github.com` stay in the default allowlist | Dependencies need them; exfiltration with a foreign token is accepted (dropping them was considered and rejected) |
 | No Keychain cache in v1 (Q1) | No second copy of the key on disk |
 | Shell spike first, then Rust (Q4) | Unverified vmnet assumptions decide the design |
 | Agent config bundled in sandcastle (Q5) | One repo, one pin |
@@ -305,12 +305,11 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 
 ## 8. Open questions (numbered as in the design doc)
 
-Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 4 (shell spike first), 5 (bundled), 6 (yes).
+Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 3 (default allowlist as proposed, GitHub included), 4 (shell spike first), 5 (bundled), 6 (yes).
 
 Still open:
 
 2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected, and `github.com` reachable through a method-aware relay path, not a CONNECT tunnel.)
-3. Default allowlist: now LiteLLM (via relay) and `registry.npmjs.org` only. `github.com` dropped. Not yet confirmed that npm alone is enough for daily work.
 7. Clone-and-fetch mechanism: is the proposal in 2.5 (read-only `.git` mount as source, `upload-pack` via exec for fetch) right, or should the relay proxy Git smart HTTP instead? Decide after the spike.
 
 Do not silently decide these. Ask the owner, or implement the proposal and flag it.
