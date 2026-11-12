@@ -4,6 +4,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 
 - Repo: https://github.com/cburkhal/sandcastle
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
+- This file is newer than the design doc where they differ (clone-and-fetch, no `github.com` in the allowlist).
 - Status as of 2026-11-12: **design only, no code yet.** The next step is the manual spike (see "Current status and next steps").
 
 ---
@@ -56,7 +57,7 @@ macOS host                                   Apple container VM (one per repo)
 |        | one-time link         |  internal |   dummy LLM key, no DNS,         |
 |        v                       |  network  |   no Git creds, read-only root   |
 | sandcastle relay (Rust) <------+-----------+-> port 4096 (NOT published)      |
-|   UI gateway: cookie + Origin  |           | /workspace  (repo, read-write)   |
+|   UI gateway: cookie + Origin  |           | /workspace  (own clone, volume)  |
 |   LLM relay: swaps in real key |           | OpenCode config (read-only)      |
 |   Egress proxy: CONNECT allow  |           | home volume (sessions, caches)   |
 |   logs every blocked host      |           +----------------------------------+
@@ -65,8 +66,10 @@ macOS host                                   Apple container VM (one per repo)
 +---|----------------|-----------+
     | HTTPS + real key           | CONNECT (allowlist only)
     v                            v
- LiteLLM (company gateway)    Allowlisted hosts (npm registry, GitHub read-only)
+ LiteLLM (company gateway)    Allowlisted hosts (npm registry only by default)
 ```
+
+The host repo is never writable from the box. The agent works on its own clone; the host pulls commits out with `sandcastle fetch` (see 2.5).
 
 The box has exactly one exit: the relay on macOS.
 
@@ -96,7 +99,7 @@ Listens on `127.0.0.1` for the browser and on the host side of each box's intern
 2. **LLM relay.** OpenCode talks plain HTTP to `http://<gateway>:<port>/v1` with a dummy key. The relay swaps in the real LiteLLM key and forwards over HTTPS. The key exists only in relay memory. No TLS interception needed because the relay is the endpoint.
 3. **Egress proxy.** All other outbound traffic goes via `HTTP_PROXY` / `HTTPS_PROXY`. The relay allows `CONNECT` only to allowlisted hosts and logs every blocked attempt.
 
-Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server; since v1.1.10 the server is off by default but still unauthenticated when enabled. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Open question 6 confirms this.
+Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server; since v1.1.10 the server is off by default but still unauthenticated when enabled. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Confirmed by the owner (question 6).
 
 ### 2.3 The box (Apple container)
 
@@ -104,7 +107,7 @@ Why the login stays (even though "all is local"): an unauthenticated OpenCode se
 - **Entrypoint:** `opencode web --hostname 0.0.0.0 --port 4096` with `OPENCODE_SERVER_PASSWORD` set to the random per-run value (only the relay knows it).
 - **Network:** per-box network via `container network create --internal` (host-only access). The relay is the only way out.
 - **DNS:** off (`--no-dns`). Names are resolved by the relay, so DNS can't be a side channel.
-- **Mounts:** repo read-write at `/workspace`; OpenCode config read-only; a named volume for the agent's home (sessions, caches). **No macOS home mount. No SSH agent (`--ssh` stays off).**
+- **Mounts:** a named volume at `/workspace` holding the box's own clone of the repo; OpenCode config read-only; a named volume for the agent's home (sessions, caches). **The host working tree is never mounted read-write. No macOS home mount. No SSH agent (`--ssh` stays off).**
 - **Hardening:** `--read-only` root filesystem, `--tmpfs /tmp`, `--cap-drop ALL`, CPU and memory limits (`-c`, `-m`).
 - **Ports:** none published. The relay reaches port 4096 over the internal network.
 - A "container machine" (systemd, `container machine create`) is **not** used: with Docker out of scope, one plain container per repo is simpler and smaller. If ever used, `--home-mount` must be `none` (default is `rw`).
@@ -120,9 +123,17 @@ The LiteLLM virtual key must carry a monthly budget, a model allowlist and an ex
 
 ### 2.5 Git
 
-- Inside the box the agent can commit but has no Git credentials, so it cannot push.
-- `sandcastle push` runs `git push` on macOS with hooks and fsmonitor disabled: `git -c core.hooksPath=/dev/null -c core.fsmonitor= push`. Nothing the agent wrote into `.git` runs on the Mac.
-- This doubles as a human review gate.
+Model: clone-and-fetch. The agent never writes to the host repo, so nothing it puts into `.git` (hooks, `core.fsmonitor`, `core.pager`, `diff.external`, `core.sshCommand`) can run on the Mac, whichever Git command or editor integration touches the host repo.
+
+- The box works on its own clone in the `/workspace` volume. It can commit but has no Git credentials and no route to GitHub, so it cannot push.
+- `sandcastle fetch` brings the box's commits into the host repo under `refs/remotes/sandcastle/*`. Fetching from an untrusted repo is safe; checking out or merging the result is the human review gate.
+- The user reviews, merges and pushes with plain Git on macOS.
+- Tradeoff accepted by the owner: the agent's working tree cannot be opened live in a macOS editor. Uncommitted work in the box is invisible to the host until committed and fetched.
+
+Proposed mechanism (unverified, see question 7 and the spike):
+- Seed: the host repo's `.git` directory is mounted read-only into the box as the clone source. Only `.git`, not the working tree, so untracked files such as `.env` stay out of the box. Check that `.git/config` holds no credentials in remote URLs before mounting.
+- Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream.
+- Sync host to box: the agent runs `git fetch` from the read-only source mount.
 
 ---
 
@@ -136,7 +147,7 @@ Modularization rule set by the user (follow it strictly):
 | --- | --- | --- | --- |
 | Secrets | `resolve(reference) -> Secret` (read only) | Bitwarden via `bw` | Secret references as URIs in config, e.g. `bitwarden://<item-id>/password` (same idea as 1Password `op://`) |
 | Agent | `image()`, `config(llm_endpoint, models)`, `ui_port()`, `health()` | OpenCode | OpenAI-compatible endpoint; standard `HTTP_PROXY`/`HTTPS_PROXY`; image from a Containerfile (OCI) |
-| Sandbox runtime | `network_create`, `volume_create`, `run(BoxSpec)`, `stop`, `remove`, `inspect` | Apple `container` CLI | OCI images; `BoxSpec` (image, mounts, env, network, limits) uses OCI runtime terms, not Apple-specific flags |
+| Sandbox runtime | `network_create`, `volume_create`, `run(BoxSpec)`, `exec`, `stop`, `remove`, `inspect` | Apple `container` CLI | OCI images; `BoxSpec` (image, mounts, env, network, limits) uses OCI runtime terms, not Apple-specific flags |
 
 Deliberately **not** modules:
 - **LiteLLM:** already a standard (OpenAI-compatible URL + key in config).
@@ -183,14 +194,16 @@ version = "<pinned>"
 kind = "apple-container"
 
 [egress]
-allow = ["registry.npmjs.org", "github.com", "codeload.github.com"]
+allow = ["registry.npmjs.org"]
 ```
+
+`github.com` is deliberately not in the default list. A CONNECT tunnel is opaque: the relay sees the host, not the method or credentials, so "read-only GitHub" cannot be enforced and an injected prompt could push repo content to an attacker's repo with an attacker-supplied token. Add it per box only when needed. The same weakness applies to `registry.npmjs.org` (`npm publish` with a foreign token); this is accepted for now.
 
 Allowlist changes come only from host config. A file inside the repo must never be able to widen its own network access.
 
 ### Rust building blocks
 
-`clap` (CLI), `tokio` + `hyper` (relay), `serde` + `toml` (config). `security-framework` (Keychain) only if open question 1 is answered yes. All widely used, permissive licenses.
+`clap` (CLI), `tokio` + `hyper` (relay), `serde` + `toml` (config). No Keychain dependency in v1 (question 1 answered no). All widely used, permissive licenses.
 
 ---
 
@@ -202,17 +215,17 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 | --- | --- |
 | `sandcastle doctor` | Checks macOS, Apple silicon, `container` version, `bw` login, LiteLLM reachability |
 | `sandcastle init` | Writes `config.toml`, builds the image, records its digest |
-| `sandcastle up [path]` | Unlocks `bw` if needed, starts relay, creates network + volume on first run, starts box, opens browser |
-| `sandcastle down [path]` | Stops box and relay; keeps the home volume |
+| `sandcastle up [path]` | Unlocks `bw` if needed, starts relay, creates network + volumes on first run, seeds the box's clone, starts box, opens browser |
+| `sandcastle down [path]` | Stops box and relay; keeps the home and workspace volumes |
 | `sandcastle ls` | Lists boxes: repo, port, status, image digest |
-| `sandcastle push [path]` | `git push` on macOS with hooks and fsmonitor disabled |
-| `sandcastle reset [path]` | Deletes box, network and home volume; repo files untouched |
+| `sandcastle fetch [path]` | Fetches the box's commits into the host repo under `refs/remotes/sandcastle/*`; the user merges and pushes with plain Git |
+| `sandcastle reset [path]` | Deletes box, network, home volume and workspace volume (warns about unfetched commits); host repo untouched |
 | `sandcastle log [path]` | Relay log: allowed/blocked hosts, LLM request count |
 
 `up`, in order:
 1. Resolve repo root; derive box name from path.
 2. `bw unlock` if locked; resolve LiteLLM key into memory.
-3. Create internal network and home volume if missing.
+3. Create internal network, home volume and workspace volume if missing; on first run the box clones the repo from the read-only source mount.
 4. Start relay on the network's host address and on `127.0.0.1:<port>`.
 5. `container run` with the flags from 2.3, dummy key, `HTTP_PROXY`/`HTTPS_PROXY`, and the random internal password.
 6. Wait for the UI to answer, then open the one-time login link on `http://127.0.0.1:<port>`.
@@ -227,15 +240,15 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 | Internal network + relay as only exit | Arbitrary hosts, reverse shells, reaching the company network | Exfiltration via allowlisted hosts (keep list short) |
 | No DNS in the box | DNS tunnelling | None known |
 | LLM key only in relay | Stealing the LiteLLM key | Spending budget while box runs (budget caps it) |
-| No Git credentials in box | Pushing/deleting remote repos | None; push is manual |
-| `sandcastle push` with hooks off | Agent-written hooks running on macOS | Other host tools reading the repo (editor tasks, Makefiles) |
+| No Git credentials in box, `github.com` not allowlisted | Pushing/deleting remote repos; exfiltrating the repo to GitHub with a foreign token | Returns if `github.com` is added to a box's allowlist |
+| Clone-and-fetch: host repo never writable from the box | Agent-written hooks and `.git/config` keys running on macOS | Fetched content once checked out (editor tasks, Makefiles, build scripts) |
 | Read-only config mount | Agent rewriting its own config, prompts, MCP servers | None |
-| Read-only root, `cap-drop ALL`, non-root | Persisting outside the home volume | Persistence in home volume until `reset` |
+| Read-only root, `cap-drop ALL`, non-root | Persisting outside the volumes | Persistence in home and workspace volumes until `reset` |
 | UI via relay: one-time link, cookie, Host + Origin checks | Websites in the browser or other machines driving the agent | Local malware (out of scope) |
 | Allowlist only from host config | Repo widening its own network access | None |
 | Pinned image digest + OpenCode version | Surprise upstream changes | Pins need updating (Renovate-style comments) |
 
-Biggest remaining hole: content the agent writes into the repo. Treat agent commits like a PR from a stranger.
+Biggest remaining hole: content the agent commits. Treat fetched commits like a PR from a stranger, and review before checking them out.
 
 ---
 
@@ -277,21 +290,28 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | LiteLLM virtual key, injected by relay | Agent never sees the real key; leaks are budget-capped |
 | Invisible login (one-time link + cookie) instead of no auth | User wants frictionless; CVE-2026-22812 shows unauthenticated localhost is exploitable from websites |
 | No published port; UI served by relay | Lets the relay enforce Host/Origin checks |
-| Manual `sandcastle push` (pending Q2) | No Git creds in box; human review gate |
+| Clone-and-fetch instead of a read-write repo mount | Agent-writable `.git/config` runs code on any host Git command, not only on push; owner does not need live editing on macOS |
+| `sandcastle fetch`, then manual merge and push (agent PRs pending Q2) | No Git creds in box; human review gate |
+| `github.com` dropped from the default allowlist | CONNECT cannot enforce read-only; exfiltration with a foreign token |
+| No Keychain cache in v1 (Q1) | No second copy of the key on disk |
+| Shell spike first, then Rust (Q4) | Unverified vmnet assumptions decide the design |
+| Agent config bundled in sandcastle (Q5) | One repo, one pin |
+| Invisible login confirmed (Q6) | See 2.2 |
 | Modules for secrets, agent, runtime | Replaceable later at minimal cost; no speculative adapters |
 | Scope: owner only | Other roles dropped from scope |
 | Name: sandcastle | Chosen by owner |
 
 ---
 
-## 8. Open questions (unanswered, numbered as in the design doc)
+## 8. Open questions (numbered as in the design doc)
 
-1. Cache the LiteLLM key in the macOS Keychain between runs to avoid unlocking Bitwarden every time? (Second copy on disk, encrypted.)
-2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected.)
-3. Default allowlist: proposal is LiteLLM (via relay), `registry.npmjs.org`, `github.com`, `codeload.github.com` (read), nothing else.
-4. Rust from day one, or a one-day shell + stock-proxy prototype first?
-5. Agent config (trimmed `opencode.jsonc`, prompts): bundled in sandcastle, or its own Git repo mounted read-only?
-6. Is the invisible login acceptable?
+Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 4 (shell spike first), 5 (bundled), 6 (yes).
+
+Still open:
+
+2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected, and `github.com` reachable through a method-aware relay path, not a CONNECT tunnel.)
+3. Default allowlist: now LiteLLM (via relay) and `registry.npmjs.org` only. `github.com` dropped. Not yet confirmed that npm alone is enough for daily work.
+7. Clone-and-fetch mechanism: is the proposal in 2.5 (read-only `.git` mount as source, `upload-pack` via exec for fetch) right, or should the relay proxy Git smart HTTP instead? Decide after the spike.
 
 Do not silently decide these. Ask the owner, or implement the proposal and flag it.
 
@@ -307,15 +327,17 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 - [ ] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake.
 - [ ] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder.
 - [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
-- [ ] OpenCode runs with `--read-only`, tmpfs `/tmp`, and a home volume.
-- [ ] Bind-mount performance on a real docs repo is acceptable (small-file I/O on bind mounts is known to be slower).
+- [ ] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume.
+- [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).
+- [ ] Clone-and-fetch works: the box clones from a read-only mount of the host `.git`; the host fetches the box's commits through `container exec ... git upload-pack` into `refs/remotes/sandcastle/*`.
+- [ ] A non-root user in the box can read the read-only `.git` mount and write the named volumes (UID mapping).
 
 Fallback if the first two fail: a small proxy container attached to two networks (internal + default) instead of a host listener.
 
 **Roadmap:**
 1. Spike (above).
-2. v0.1: Rust CLI with `up`, `down`, `ls`, `reset`; relay with UI gateway, LLM key swap, CONNECT allowlist.
-3. v0.2: `push`, `log`, `doctor`; model list from LiteLLM; image rebuild with digest pinning.
+2. v0.1: Rust CLI with `up`, `down`, `ls`, `fetch`, `reset`; relay with UI gateway, LLM key swap, CONNECT allowlist.
+3. v0.2: `log`, `doctor`; model list from LiteLLM; image rebuild with digest pinning.
 4. v0.3: optional relay-injected secrets (Brave Search, GitHub token if Q2 = yes).
 5. Later: background daemon and a small UI (list boxes, start/stop/open).
 
