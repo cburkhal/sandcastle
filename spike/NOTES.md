@@ -82,10 +82,19 @@ Passed, run by the owner on 2026-11-12 with `BW_ITEM=<item name>`.
 ### Not tested yet: `opencode run` round trip
 
 ```
-BW_ITEM=<item name> OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
+BW_ITEM=<item name> OPENCODE_MODEL="<id> <id>" ./03-proxy-install-llm.sh
 ```
 
-The OpenCode config the script writes is unverified against 2.x, so this step may need a fix.
+The owner's first attempt failed with `Model unavailable: relay/<id>`. Cause: a bug in the script, not the model or the gateway. `container exec` without `-i` does not forward stdin, so the OpenCode config written through a heredoc arrived as an empty file and the `relay` provider did not exist. Fixed with `-i`.
+
+Dry run against a fake gateway after the fix (2026-11-12): OpenCode 2.2.7 lists `relay/<id>` and sends `POST /v1/chat/completions` to the forwarder. So the config shape (`provider.<name>` with `npm: @ai-sdk/openai-compatible`, `options.baseURL`, `options.apiKey`, `models`) and `OPENCODE_CONFIG` both work in 2.x. Only the answer from the real gateway is left to see.
+
+Findings from that run:
+
+1. `container exec` needs `-i` for anything piped in. Relevant for `sandcastle fetch` (item 7 already uses `-i`).
+2. OpenCode asks for `models.opencode.ai` repeatedly at start (its model catalogue). The proxy refuses it and OpenCode works without it. Keep it off the allowlist.
+3. The openai-compatible provider needed no download from npm at run time.
+4. OpenCode retries a failing provider 11 times before giving up (about 90 s per model here).
 
 ## OpenCode version: 2.2.7 from the GitHub release
 

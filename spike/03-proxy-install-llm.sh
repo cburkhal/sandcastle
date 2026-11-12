@@ -98,30 +98,36 @@ expect_ok "box lists models via http://$GW:$LLM_PORT/v1/models with a dummy key"
       .then(r => r.json()).then(j => process.exit(j.data && j.data.length ? 0 : 1), () => process.exit(1))"
 
 if [ -n "${OPENCODE_MODEL:-}" ]; then
-  # Config shape taken from the OpenCode docs for OpenAI-compatible providers;
-  # unverified against OpenCode 2.x. The provider package is fetched from
-  # npm at first start, which is itself part of what this item tests.
-  container exec "$BOX" bash -c "mkdir -p /tmp/work && cat >/tmp/opencode.json" <<EOF
+  # OPENCODE_MODEL may hold several ids separated by spaces; each gets one prompt.
+  # Provider shape checked against OpenCode 2.2.7 with `opencode models`.
+  MODELS_JSON="$(python3 -c 'import json,sys; print(json.dumps({m: {} for m in sys.argv[1].split()}))' "$OPENCODE_MODEL")"
+  # -i is required: without it `container exec` does not forward stdin and the file ends up empty.
+  container exec -i "$BOX" bash -c "mkdir -p /tmp/work && cat >/tmp/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "permission": {"*": "allow"},
   "provider": {
     "relay": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {"baseURL": "http://$GW:$LLM_PORT/v1", "apiKey": "dummy"},
-      "models": {"$OPENCODE_MODEL": {}}
+      "models": $MODELS_JSON
     }
   }
 }
 EOF
-  if container exec -e OPENCODE_CONFIG=/tmp/opencode.json -w /tmp/work "$BOX" \
-    timeout 120 opencode run --standalone --auto -m "relay/$OPENCODE_MODEL" "Reply with the single word: pong"; then
-    pass "opencode run got an answer through the forwarder"
-  else
-    fail "opencode run through the forwarder"
-  fi
+  expect_ok "config file arrived in the box" container exec "$BOX" test -s /tmp/opencode.json
+  note "models OpenCode sees for the relay provider:"
+  container exec -e OPENCODE_CONFIG=/tmp/opencode.json -w /tmp/work "$BOX" \
+    timeout 60 opencode models --standalone 2>&1 | grep '^relay/' || true
+  for M in $OPENCODE_MODEL; do
+    if container exec -e OPENCODE_CONFIG=/tmp/opencode.json -w /tmp/work "$BOX" \
+      timeout 120 opencode run --standalone --auto -m "relay/$M" "Reply with the single word: pong"; then
+      pass "opencode run got an answer from $M through the forwarder"
+    else
+      fail "opencode run with $M through the forwarder"
+    fi
+  done
   note "proxy log after opencode run (hosts OpenCode wanted):"
-  grep -E 'CONNECT|refused|filtered' "$STATE_DIR/tinyproxy.log" | tail -30 || true
+  grep -E 'Request|refused|filtered' "$STATE_DIR/tinyproxy.log" | tail -30 || true
 else
   note "OPENCODE_MODEL not set: 'opencode run' check SKIPPED. Model ids the gateway offers:"
   container exec "$BOX" node -e "
