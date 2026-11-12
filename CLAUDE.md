@@ -129,6 +129,8 @@ Why the login stays (even though "all is local"): an unauthenticated OpenCode se
 
 Rule set by the owner (2026-11-12): **all secrets are obtained at the start of the session, then everything runs unattended.** `up` begins with one secrets phase: Bitwarden login if needed, one vault unlock (master password), and resolving every secret reference the session will need, including any added later (for example a GitHub token). Nothing may prompt after that phase. One master password prompt per `up` is accepted. The same applies to other credentials `up` needs, such as `sudo` for the pf rule.
 
+Every prompt must say which password it wants and why (owner request, 2026-11-12): the Bitwarden master password and the macOS login password for `sudo` look alike on a bare prompt. sandcastle prints one line before each, for example "Bitwarden master password (to read the LLM key)" and "macOS login password (sudo, to load the firewall rules for this box)", and passes its own prompt text to `sudo -p`.
+
 The LiteLLM virtual key must carry a monthly budget, a model allowlist and an expiry, so even a leak is cheap. The user confirmed LiteLLM supports per-user virtual keys.
 
 ### 2.5 Git
@@ -364,7 +366,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 - [x] 1. A box on an `--internal` network reaches a listener on the host's gateway address, not the internet.
 - [x] 2. A host listener binds the gateway address only and survives sleep/wake.
 - [x] 3. With `--no-dns` and proxy variables, npm installs through an allowlisting proxy and OpenCode answers a prompt through a plain HTTP forwarder with the key from Bitwarden.
-- [ ] 4. The host reaches port 4096 on the box. **Open:** the LAN-device check has not been done, and the Mac has IP forwarding on (see 2.6).
+- [x] 4. The host reaches port 4096 on the box; a second device on the LAN cannot, even with a route through the Mac, once the pf rules are loaded (the Mac has IP forwarding on, see 2.6).
 - [x] 5. OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume.
 - [x] 6. Node `fetch`, npm, Git and Bun honour the proxy variables; without them they fail after a 20 s timeout.
 - [x] 7. Clone-and-fetch works as proposed in 2.5.

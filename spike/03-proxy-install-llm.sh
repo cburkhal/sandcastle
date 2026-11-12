@@ -74,7 +74,7 @@ if [ -n "${BW_ITEM:-}" ]; then
     fail "bw is not logged in: run 'bw login' first"; finish; exit
   fi
   if [ "$BW_STATE" = locked ] && [ -z "${BW_SESSION:-}" ]; then
-    BW_SESSION="$(bw unlock --raw </dev/tty)" || { fail "bw unlock failed"; finish; exit; }
+    BW_SESSION="$(bw_unlock "read the gateway URL and key from item '$BW_ITEM'")" || { fail "bw unlock failed"; finish; exit; }
     export BW_SESSION
   fi
   ITEM_JSON="$(bw get item "$BW_ITEM")" || { fail "bw could not read item '$BW_ITEM'"; finish; exit; }

@@ -42,6 +42,24 @@ observe() {
   if "$@" >/dev/null 2>&1; then note "$d: yes"; else note "$d: no"; fi
 }
 
+# --- password prompts ----------------------------------------------------
+# Two different passwords are asked for in the spike. Each prompt says which
+# one it is and what it is needed for.
+ask() { printf '\n>> %s\n   Needed to: %s\n' "$1" "$2" >/dev/tty; }
+
+# need_sudo "reason": make sure sudo is usable, asking for the macOS password if not.
+need_sudo() {
+  sudo -n true 2>/dev/null && return 0
+  ask "macOS login password (sudo, admin rights on this Mac)" "$1"
+  sudo -p "   macOS password for %u: " -v
+}
+
+# bw_unlock "reason": prints a Bitwarden session key; asks for the master password.
+bw_unlock() {
+  ask "Bitwarden MASTER password (unlocks your vault for this run only)" "$1"
+  bw unlock --raw </dev/tty
+}
+
 # --- network -----------------------------------------------------------
 net_exists() { container network ls 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$NET"; }
 net_up() { net_exists || container network create --internal "$NET" >/dev/null; }

@@ -9,14 +9,14 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | 1 | Internal network: box reaches host listener, not the internet | `01-internal-network.sh` | **pass** (2026-11-12) |
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
 | 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **pass**, including an `opencode run` round trip (2026-11-12) |
-| 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | host to box: **pass**. LAN isolation: **open**, IP forwarding is on (2026-11-12) |
+| 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | **pass**, with the pf rules loaded (2026-11-12) |
 | 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | **pass**, after a volume ownership fix (2026-11-12) |
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | **pass** (2026-11-12) |
 | 7 | Clone from read-only `.git` mount; fetch via `container exec ... git upload-pack` | `07-clone-and-fetch.sh` | **pass** (2026-11-12) |
 | 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | **pass**, with the volume ownership fix (2026-11-12) |
 | 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | **pass** (2026-11-12, run by the owner, needs sudo) |
 
-All nine scripts have run. Still open: the LAN-device half of item 4, with the pf rules loaded.
+All nine items pass.
 
 ## Verdict on the fallback (items 1 and 2)
 
@@ -127,7 +127,7 @@ Finding (answers most of item 8): **a fresh named volume is owned by root (0:0, 
 
 ## Item 4: UI port reachability
 
-Host to box passed. LAN isolation is not shown yet.
+Passed with the pf rules loaded.
 
 - The host fetched a page from the box at `<box-ip>:4096` over the internal network, with no port published.
 - Nothing listens on port 4096 on `127.0.0.1` or on the Mac's LAN address.
@@ -146,7 +146,12 @@ Manual check, with a second device on the LAN:
 ./04-ui-port-reachability.sh clean
 ```
 
-The owner ran the baseline (`hold`, no pf rules) on 2026-11-12: the request to the Mac's LAN address failed, as it should. The request to the box address returned the page. It is not recorded which machine that second request came from: from the Mac itself it is expected, from another device it would confirm the hole. The run with pf rules loaded is still to do.
+Results, run by the owner on 2026-11-12:
+
+- Baseline (`hold`, no pf rules), from the Mac itself: the Mac's LAN address refuses port 4096; the box address answers, which is expected on the host.
+- With pf rules (`hold-pf`), from a second device on the LAN: the request to the Mac's LAN address failed, the request to the box address failed, and it still failed after adding a route to the box subnet through the Mac. So the `block out` rule closes the IP forwarding path.
+
+Not tested: the second device with a route but without pf rules, so the hole itself was not demonstrated, only that it is closed with the rules.
 
 ## Item 6: proxy variables
 

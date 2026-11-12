@@ -20,6 +20,7 @@ TOKENFILE="$STATE_DIR/04.pftoken"
 
 cleanup() {
   if [ -f "$TOKENFILE" ]; then
+    need_sudo "remove the test firewall (pf) rules"
     sudo pfctl -a "$ANCHOR" -F all >/dev/null 2>&1 || true
     sudo pfctl -X "$(cat "$TOKENFILE")" >/dev/null 2>&1 || true
     rm -f "$TOKENFILE"
@@ -60,6 +61,7 @@ hold | hold-pf)
   trap - EXIT
   if [ "$1" = hold-pf ]; then
     step "Load the pf rules from item 9 (sudo)"
+    need_sudo "load test firewall (pf) rules for the box network"
     GW="$(net_field ipv4Gateway)"; SUBNET="$(net_field ipv4Subnet)"
     IFACE="$(ifconfig | awk -v ip="$GW" '/^[a-z0-9]+:/{i=$1; sub(":","",i)} $1=="inet" && $2==ip {print i}')"
     sudo pfctl -E 2>&1 | awk '/Token/{print $NF}' >"$TOKENFILE"

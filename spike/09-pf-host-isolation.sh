@@ -30,8 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "This script needs sudo for pfctl."
-sudo -v
+need_sudo "load and remove test firewall (pf) rules"
 cleanup
 
 # TCP connect from the box via node (handles IPv6 and scoped addresses).
