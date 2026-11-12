@@ -5,6 +5,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Repo: https://github.com/cburkhal/sandcastle
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount).
+- Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
 - Status as of 2026-11-12: **design only, no code yet.** The next step is the manual spike (see "Current status and next steps").
 
 ---
