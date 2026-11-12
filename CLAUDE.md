@@ -328,7 +328,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 - [x] A container on a `--internal` network can reach a listener on the host's address for that network, but not the internet. (Passed 2026-11-12, see `spike/NOTES.md`.)
 - [x] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake. (Passed 2026-11-12.)
-- [ ] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder.
+- [x] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder. (Passed 2026-11-12: npm through tinyproxy, model list through the forwarder with the key from Bitwarden. An `opencode run` round trip is still to do.)
 - [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
 - [x] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume. (Passed 2026-11-12 with 2.2.7, after the volume ownership fix.)
 - [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).

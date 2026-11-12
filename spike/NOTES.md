@@ -8,7 +8,7 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | --- | --- | --- | --- |
 | 1 | Internal network: box reaches host listener, not the internet | `01-internal-network.sh` | **pass** (2026-11-12) |
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
-| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **install: pass, LiteLLM: not tested yet** (2026-11-12) |
+| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **pass** for proxy install and gateway access; `opencode run` round trip not tested yet (2026-11-12) |
 | 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | written, not run |
 | 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | **pass**, after a volume ownership fix (2026-11-12) |
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
@@ -71,19 +71,21 @@ Findings:
 
 Since then OpenCode moved to 2.2.7 from the GitHub release, baked into the spike image (see "OpenCode version" below). The script no longer installs OpenCode from npm; it installs a small package instead, because npm through the proxy still matters for plugins and project dependencies. The changed script ran on 2026-11-12: the npm install through the proxy and the refusal of `example.com` pass with the 2.2.7 image.
 
-### Not tested yet: LiteLLM
+### Gateway access through the forwarder
 
-The second half reads the gateway URL (website field) and the key (password field) from a Bitwarden login item. It needs a logged-in `bw`, which only the owner can provide (master password). Run:
+Passed, run by the owner on 2026-11-12 with `BW_ITEM=<item name>`.
+
+- The script read the gateway URL and the key from the Bitwarden login item (website and password fields) after a master password prompt.
+- The forwarder bound to the gateway address, swapped the box's dummy key for the real one and forwarded over HTTPS.
+- The box, with `--no-dns` and no route to the internet, listed the gateway's models through `http://<gateway>:<port>/v1/models`: 47 model ids came back.
+
+### Not tested yet: `opencode run` round trip
 
 ```
-bw login                                   # once
-BW_ITEM=<item name> ./03-proxy-install-llm.sh
 BW_ITEM=<item name> OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
 ```
 
-The first run lists the model ids the gateway offers; the second adds an `opencode run` round trip. The script unlocks the vault for that run only and never prints the key or writes it to disk.
-
-`OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 2.x.
+The OpenCode config the script writes is unverified against 2.x, so this step may need a fix.
 
 ## OpenCode version: 2.2.7 from the GitHub release
 

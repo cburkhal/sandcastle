@@ -47,14 +47,31 @@ brew install bitwarden-cli
 bw --version
 ```
 
-Log in once. Only if your vault is not on bitwarden.com (EU cloud or self-hosted), set the server first:
+Log in once. Only if your vault is not on bitwarden.com (EU cloud or self-hosted), set the server first with `bw config server https://<bitwarden-host>`.
+
+Either log in interactively with `bw login`, or with a personal API key kept in the macOS Keychain (create the key in the Bitwarden web vault under Settings > Security > Keys, and store the two values once with `security add-generic-password -a "$USER" -s bitwarden-client-id -w` and the same for `bitwarden-client-secret`):
 
 ```
-bw config server https://<bitwarden-host>     # only for EU cloud or self-hosted
-bw login
+export BW_CLIENTID=$(security find-generic-password -a "$USER" -s "bitwarden-client-id" -w)
+export BW_CLIENTSECRET=$(security find-generic-password -a "$USER" -s "bitwarden-client-secret" -w)
+bw login --apikey
+unset BW_CLIENTID BW_CLIENTSECRET
 ```
 
-`bw login` stores an encrypted copy of the vault under `~/Library/Application Support/Bitwarden CLI/`. The vault stays locked until `bw unlock`, and the unlock session key is only ever held in an environment variable.
+### Login, unlock and the master password
+
+Bitwarden has two separate steps:
+
+- **Login** proves who you are and downloads the vault to `~/Library/Application Support/Bitwarden CLI/`, still encrypted. The API key is enough for this, and it lasts until `bw logout`.
+- **Unlock** decrypts the vault. That needs your **master password**: the one you type to open your Bitwarden vault in the browser or app. The API key cannot do this, by design, so the API key in the Keychain is not a copy of your secrets.
+
+So a master password prompt appears whenever something needs a secret and the vault is locked. `bw unlock` returns a session key; whoever holds it can read the vault until `bw lock` or until the shell that holds it closes.
+
+How often you type it:
+
+- Default: once per command that needs secrets, for example once per `sandcastle up`. The session key lives only in that process.
+- Once per terminal: `export BW_SESSION="$(bw unlock --raw)"`. Everything started from that terminal can then read the vault without asking. Convenient, but that includes any other program you run there.
+- Never: possible only by storing the master password itself (Keychain plus `bw unlock --passwordenv`). Not recommended and not used here: it puts the key to the whole vault on disk, which the design avoids.
 
 ## Put the LiteLLM key into Bitwarden
 
