@@ -10,10 +10,14 @@
 # through the proxy; see NOTES.md.
 #
 # Needs on the host: tinyproxy (brew install tinyproxy).
-# Needs in the environment (never commit these):
-#   LITELLM_BASE_URL   https://<litellm-host>      (optional: LLM part is skipped without it)
-#   LITELLM_KEY        the virtual key             (optional, same)
-#   OPENCODE_MODEL     a model id LiteLLM serves   (optional: enables the `opencode run` check)
+# LLM part, pick one (never commit hostnames, keys or item IDs):
+#   BW_ITEM=<item name or id>   read from Bitwarden: URL from the item's website
+#                               field, key from its password field. Unlocks the
+#                               vault for this run only if it is locked.
+#   LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=...   pass them directly
+# Without either, the LLM part is skipped.
+#   OPENCODE_MODEL=<id>         optional: adds an `opencode run` round trip.
+#                               Without it the script lists the model ids.
 source "$(dirname "$0")/lib.sh"
 
 BOX=sc-spike-03
@@ -63,8 +67,26 @@ expect_fail "non-allowlisted host (example.com) is refused by the proxy" \
 note "proxy log:"; grep -E 'CONNECT|Established|refused|filtered' "$STATE_DIR/tinyproxy.log" | tail -20 || true
 
 step "LiteLLM through a plain HTTP forwarder on the gateway address"
+if [ -n "${BW_ITEM:-}" ]; then
+  # Secrets stay in shell variables of this process: never printed, never written.
+  BW_STATE="$(bw status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+  if [ "$BW_STATE" = unauthenticated ]; then
+    fail "bw is not logged in: run 'bw login' first"; finish; exit
+  fi
+  if [ "$BW_STATE" = locked ] && [ -z "${BW_SESSION:-}" ]; then
+    BW_SESSION="$(bw unlock --raw </dev/tty)" || { fail "bw unlock failed"; finish; exit; }
+    export BW_SESSION
+  fi
+  ITEM_JSON="$(bw get item "$BW_ITEM")" || { fail "bw could not read item '$BW_ITEM'"; finish; exit; }
+  LITELLM_BASE_URL="$(printf '%s' "$ITEM_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"]["uris"][0]["uri"])')"
+  LITELLM_KEY="$(printf '%s' "$ITEM_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"]["password"])')"
+  unset ITEM_JSON
+  [ -n "$LITELLM_BASE_URL" ] && [ -n "$LITELLM_KEY" ] && pass "URL and key read from Bitwarden item '$BW_ITEM' (not shown)" ||
+    { fail "Bitwarden item '$BW_ITEM' has no website or no password"; finish; exit; }
+  export LITELLM_BASE_URL LITELLM_KEY
+fi
 if [ -z "${LITELLM_BASE_URL:-}" ] || [ -z "${LITELLM_KEY:-}" ]; then
-  note "LITELLM_BASE_URL / LITELLM_KEY not set: LLM part SKIPPED"
+  note "no BW_ITEM and no LITELLM_BASE_URL / LITELLM_KEY: LLM part SKIPPED"
   finish; exit
 fi
 python3 "$SPIKE_DIR/lib/llm_forward.py" "$GW" "$LLM_PORT" >"$STATE_DIR/llm.log" 2>&1 &
@@ -101,7 +123,10 @@ EOF
   note "proxy log after opencode run (hosts OpenCode wanted):"
   grep -E 'CONNECT|refused|filtered' "$STATE_DIR/tinyproxy.log" | tail -30 || true
 else
-  note "OPENCODE_MODEL not set: 'opencode run' check SKIPPED"
+  note "OPENCODE_MODEL not set: 'opencode run' check SKIPPED. Model ids the gateway offers:"
+  container exec "$BOX" node -e "
+    fetch('http://$GW:$LLM_PORT/v1/models', {headers: {authorization: 'Bearer dummy'}})
+      .then(r => r.json()).then(j => console.log(j.data.map(m => '  ' + m.id).join('\\n')))" 2>/dev/null || true
 fi
 note "forwarder log:"; cat "$STATE_DIR/llm.log"
 

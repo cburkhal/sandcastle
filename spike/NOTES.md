@@ -69,15 +69,19 @@ Findings:
 1. `--no-dns` does not leave the box without a resolver. `/etc/resolv.conf` then holds `nameserver 1.1.1.1` and `1.0.0.1`. They are unreachable on the internal network, so nothing leaks, but lookups by tools that ignore the proxy will time out instead of failing at once. Item 6 measures that. An empty resolver file or `--dns` pointing at an address that refuses quickly may be better.
 2. Node prints an `EnvHttpProxyAgent is experimental` warning with `NODE_USE_ENV_PROXY=1` (Node 22). Harmless, but it is noise in every npm run.
 
-Since then OpenCode moved to 2.2.7 from the GitHub release, baked into the spike image (see "OpenCode version" below). The script no longer installs OpenCode from npm; it installs a small package instead, because npm through the proxy still matters for plugins and project dependencies. That changed script has not been run yet.
+Since then OpenCode moved to 2.2.7 from the GitHub release, baked into the spike image (see "OpenCode version" below). The script no longer installs OpenCode from npm; it installs a small package instead, because npm through the proxy still matters for plugins and project dependencies. The changed script ran on 2026-11-12: the npm install through the proxy and the refusal of `example.com` pass with the 2.2.7 image.
 
 ### Not tested yet: LiteLLM
 
-The second half needs the real LiteLLM host and a key from Bitwarden. Run:
+The second half reads the gateway URL (website field) and the key (password field) from a Bitwarden login item. It needs a logged-in `bw`, which only the owner can provide (master password). Run:
 
 ```
-LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
+bw login                                   # once
+BW_ITEM=<item name> ./03-proxy-install-llm.sh
+BW_ITEM=<item name> OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
 ```
+
+The first run lists the model ids the gateway offers; the second adds an `opencode run` round trip. The script unlocks the vault for that run only and never prints the key or writes it to disk.
 
 `OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 2.x.
 
@@ -93,7 +97,7 @@ What is different in 2.x, found by running it (not from documentation):
 
 1. **There is no `opencode web`.** The web UI and API come from `opencode serve --hostname .. --port ..`. CLAUDE.md 2.3 still names `opencode web`.
 2. **The API requires authentication.** `/api/*` answers 401 without credentials and with a wrong password, and accepts Basic Auth with user `opencode` and `OPENCODE_SERVER_PASSWORD`. The UI shell on `/` is a static page served without authentication.
-3. **OpenCode has its own one-time login links.** `opencode pair` prints `http://127.0.0.1:<port>/auth/connect/<token>`, valid once and for 5 minutes. This overlaps with the relay's planned one-time link. Whether the relay should reuse it or keep injecting Basic Auth is a design question for the owner.
+3. **OpenCode has its own one-time login links.** `opencode pair` prints `http://127.0.0.1:<port>/auth/connect/<token>`, valid once and for 5 minutes. This overlaps with the relay's planned one-time link. Owner decision (2026-11-12): the relay keeps its own one-time link and injects Basic Auth; OpenCode's pairing is not used.
 4. **There is a background service.** `opencode pair` and `opencode run` start or use a background server on a random port unless `--standalone` or `--server` is given. In the box only `opencode serve` should run; `pair --remote` can expose a server to the internet through a tunnel, which the egress allowlist must keep blocked.
 
 ## Item 5: read-only root, tmpfs, volumes
@@ -143,7 +147,7 @@ Costs of the pf approach:
 ```
 ./01-internal-network.sh
 ./02-gateway-bind.sh [hold|check]
-[LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id>] ./03-proxy-install-llm.sh
+[BW_ITEM=<item name>] [OPENCODE_MODEL=<id>] ./03-proxy-install-llm.sh
 ./04-ui-port-reachability.sh [hold]
 ./05-readonly-root.sh
 ./06-proxy-variables.sh
@@ -154,7 +158,7 @@ Costs of the pf approach:
 
 - Items 3 and 6 need `tinyproxy` on the host. It was installed with `brew install tinyproxy` on 2026-11-12; remove it with `brew uninstall tinyproxy` after the spike.
 - Items 3 and 5 to 8 use the spike image; the first script that needs it builds it from `Containerfile`.
-- Item 3 needs the LiteLLM host and key in the environment. Do not put them in a file in this repo.
+- Item 3 reads the gateway URL and key from Bitwarden (`BW_ITEM`). Do not put them in a file in this repo.
 - Every run is copied to `spike/.state/<script>.log`.
 - Each script removes its own boxes, volumes and the `sc-spike` network on exit. Scratch files go to `spike/.state/` (git-ignored).
 - The spike uses image tags, not digests, and the Node base image. That is for the spike only.
