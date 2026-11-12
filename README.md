@@ -2,7 +2,7 @@
 
 One OpenCode instance per Git repo, each in its own Apple `container` VM on macOS. The LLM key and Git credentials never enter the VM.
 
-Status: early. The design is verified by a shell spike, and the CLI can start and stop a hardened box. The relay is not built yet, so the agent in the box has no LLM and no network access. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
+Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. Not built yet: reading the key from Bitwarden by itself, the pf firewall rules, and `sandcastle fetch`. Until the pf rules exist, the box can reach other services running on your Mac. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
 
 ## Requirements
 
@@ -109,12 +109,26 @@ OpenCode is pinned to an exact version and taken from the GitHub release, not fr
 ```
 cargo build --release
 ./target/release/sandcastle init      # writes ~/.config/sandcastle/config.toml, builds the box image
+```
+
+Edit `~/.config/sandcastle/config.toml`: set `[llm] base_url` to your gateway and adjust the `[egress] allow` list.
+
+```
 cd <a Git repository>
-sandcastle up                         # starts the box for this repo; Ctrl-C stops it
+export BW_SESSION="$(bw unlock --raw)"
+SANDCASTLE_LLM_KEY="$(bw get password <item-id>)" sandcastle up
+```
+
+`up` checks the gateway and the key, starts the box and the relay, and opens the browser on a one-time login link. Ctrl-C stops the box. The environment variable is a stopgap until sandcastle reads the key from Bitwarden itself.
+
+```
+sandcastle up --no-browser            # print the login link instead of opening it
 sandcastle ls                         # boxes, status, address
 sandcastle down                       # stop the box from another terminal; volumes are kept
 sandcastle reset                      # delete the box with its network and volumes
 ```
+
+While a box runs, hosts it tried to reach but was refused are printed once in the `up` terminal. The full relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`.
 
 What exists on the Mac afterwards: the config file, state under `~/Library/Application Support/sandcastle/`, the image `sandcastle-opencode:<version>`, and per repo one network and two volumes named after the box. `reset` removes the per-repo parts.
 

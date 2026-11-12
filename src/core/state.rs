@@ -35,6 +35,11 @@ pub fn dir(home: &Path) -> PathBuf {
     home.join("Library/Application Support/sandcastle")
 }
 
+/// Directory for a box's files that are not state: relay log, agent config.
+pub fn box_dir(home: &Path, name: &str) -> PathBuf {
+    dir(home).join("boxes").join(name)
+}
+
 fn record_path(home: &Path, name: &str) -> PathBuf {
     dir(home).join("boxes").join(format!("{name}.json"))
 }
@@ -60,6 +65,10 @@ pub fn remove(home: &Path, name: &str) -> Result<()> {
     let path = record_path(home, name);
     if path.exists() {
         fs::remove_file(path)?;
+    }
+    let files = box_dir(home, name);
+    if files.exists() {
+        fs::remove_dir_all(files)?;
     }
     Ok(())
 }

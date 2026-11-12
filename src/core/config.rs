@@ -15,6 +15,16 @@ kind = "opencode"
 [runtime]
 kind = "apple-container"
 
+# The OpenAI-compatible gateway the agent's model requests go to. Fill this in.
+# The key is not stored here: until the Bitwarden integration exists it is
+# read from the environment variable SANDCASTLE_LLM_KEY.
+# [llm]
+# base_url = "https://<litellm-host>"
+
+# Hosts the box may open HTTPS connections to, through the relay. Exact names.
+[egress]
+allow = ["registry.npmjs.org", "github.com", "codeload.github.com"]
+
 # Limits for each box.
 [limits]
 cpus = 4
@@ -26,8 +36,29 @@ memory = "4G"
 pub struct Config {
     pub agent: Kind,
     pub runtime: Kind,
+    pub llm: Option<Llm>,
+    #[serde(default)]
+    pub egress: Egress,
     #[serde(default)]
     pub limits: Limits,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Llm {
+    pub base_url: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Egress {
+    pub allow: Vec<String>,
+}
+
+impl Default for Egress {
+    fn default() -> Self {
+        Egress { allow: ["registry.npmjs.org", "github.com", "codeload.github.com"].map(String::from).to_vec() }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -92,6 +123,19 @@ mod tests {
         let config = parse(DEFAULT_CONFIG).unwrap();
         assert_eq!(config.agent.kind, "opencode");
         assert_eq!(config.limits, Limits::default());
+        assert_eq!(config.egress, Egress::default());
+        assert_eq!(config.llm, None, "the gateway URL is for the user to fill in");
+    }
+
+    #[test]
+    fn llm_and_egress_are_read() {
+        let config = parse(
+            "[agent]\nkind = \"opencode\"\n[runtime]\nkind = \"apple-container\"\n\
+             [llm]\nbase_url = \"https://gw.example/api\"\n[egress]\nallow = [\"example.org\"]\n",
+        )
+        .unwrap();
+        assert_eq!(config.llm.unwrap().base_url, "https://gw.example/api");
+        assert_eq!(config.egress.allow, ["example.org"]);
     }
 
     #[test]

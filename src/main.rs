@@ -2,10 +2,11 @@
 
 mod agent;
 mod core;
+mod relay;
 mod runtime;
+mod secrets;
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -13,7 +14,6 @@ use clap::{Parser, Subcommand};
 use crate::agent::opencode::OpenCode;
 use crate::core::lifecycle::{self, App};
 use crate::runtime::apple_container::AppleContainer;
-use crate::runtime::{BoxState, SandboxRuntime};
 
 #[derive(Parser)]
 #[command(name = "sandcastle", version, about)]
@@ -31,6 +31,9 @@ enum Command {
         /// A directory inside the repo
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Print the login link instead of opening it in the browser
+        #[arg(long)]
+        no_browser: bool,
     },
     /// Stop the box for a repo; its volumes are kept
     Down {
@@ -65,42 +68,18 @@ fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::Init => lifecycle::init(&cx),
-        Command::Up { path } => up(&cx, &path),
+        Command::Up { path, no_browser } => up(&cx, &path, !no_browser),
         Command::Down { path } => lifecycle::down(&cx, &path),
         Command::Ls => lifecycle::list(&cx),
         Command::Reset { path, yes } => lifecycle::reset(&cx, &path, yes),
     }
 }
 
-/// `up` runs in the foreground: the box lives as long as this process.
-fn up(cx: &App, path: &std::path::Path) -> Result<()> {
-    let running = lifecycle::start(cx, path)?;
-    let name = &running.record.name;
-    println!("Box {name} is up for {}", running.record.repo.display());
-    println!("  agent: http://{}:{} (host only)", running.address, running.port);
-    println!("  There is no relay yet: the agent has no LLM and no network access.");
-    println!("Press Ctrl-C to stop the box.");
-
-    let reason = tokio::runtime::Builder::new_current_thread()
+/// `up` runs in the foreground: the box and its relay live as long as this
+/// process.
+fn up(cx: &App, path: &std::path::Path, open_browser: bool) -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(wait_for_stop(cx.runtime, name));
-    println!("\n{reason}");
-    lifecycle::stop(cx, name)
-}
-
-/// Returns when the user presses Ctrl-C or the box stops by itself.
-async fn wait_for_stop(runtime: &dyn SandboxRuntime, name: &str) -> &'static str {
-    let mut check = tokio::time::interval(Duration::from_secs(5));
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return "Stopping.",
-            _ = check.tick() => {
-                // An inspect error is not proof that the box is gone; keep waiting.
-                if matches!(runtime.inspect(name), Ok(status) if status.state != BoxState::Running) {
-                    return "The box stopped by itself.";
-                }
-            }
-        }
-    }
+        .block_on(crate::core::up::run(cx, path, open_browser))
 }
