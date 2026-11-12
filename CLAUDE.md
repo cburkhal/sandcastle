@@ -6,7 +6,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); build steps 1 and 2 of 4 done** (box and relay work; Bitwarden, pf and `fetch` are missing). See "Current status and next steps".
+- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); build steps 1 to 3 of 4 done** (box, relay, Bitwarden and pf; `fetch` is missing). The Bitwarden and pf code has not been run by the owner yet. See "Current status and next steps".
 
 ---
 
@@ -122,8 +122,8 @@ Why the login stays (even though "all is local"): an unauthenticated OpenCode se
 
 ### 2.4 Secrets flow
 
-1. `sandcastle up` checks `bw status`. If not logged in, it stops and says how to log in (see `README.md`). If locked, it runs `bw unlock` interactively and keeps `BW_SESSION` in memory for that one command only.
-2. Resolves the LiteLLM virtual key by Bitwarden item ID and hands it to the relay in memory. In the owner's vault the item is a Login with the gateway URL in the website field and the key in the password field.
+1. `sandcastle up` checks `bw status`. If not logged in, it logs in: with the API key from the macOS Keychain entries `bitwarden-client-id` and `bitwarden-client-secret` if they exist (see `README.md`), otherwise interactively. If locked, it runs `bw unlock` interactively and keeps `BW_SESSION` in memory for that one command only.
+2. Resolves every reference in the config (`bitwarden://<item>/<field>` with field `password`, `username`, `uri` or `notes`; `env://NAME` for an environment variable) and hands the values to the relay in memory. `[llm] api_key` must be a reference; `base_url` may be one. In the owner's vault the item is a Login with the gateway URL in the website field and the key in the password field.
 3. The box gets only a dummy key and the relay's address.
 4. `sandcastle down` stops the relay; the key is gone.
 
@@ -163,9 +163,10 @@ block return out quick on <bridge> all
 
 - Rules by subnet alone are not enough: they leave IPv6 link-local open.
 - The bridge interface exists only while the box runs, so the rules load after the box starts, like the relay's box-side bind. Until both are in place the box must not do anything: the entrypoint waits for the relay.
-- Anchor: one line `anchor "sandcastle/*"` in `/etc/pf.conf`, added by `init` (owner decision). macOS updates may remove it, so `doctor` checks that it is still there, and `up` refuses to start a box without it. Rules go into `sandcastle/<box>`.
+- Anchor: one line `anchor "sandcastle/*"` in `/etc/pf.conf`, added by `init` (owner decision). `init` keeps a backup (`/etc/pf.conf.sandcastle-backup`), checks the new file with `pfctl -n` and reloads it with `pfctl -f`. Caveat, unverified: reloading the main ruleset may drop rules that system services added at run time (pfctl warns about this). macOS updates may remove it, so `doctor` checks that it is still there, and `up` refuses to start a box without it. Rules go into `sandcastle/<box>`.
 - pf is enabled with a reference token (`pfctl -E`) and released with `pfctl -X` on `down`.
-- Needs root: `up` asks for `sudo` in its secrets phase, `down` and `reset` need it to remove the rules.
+- Needs root, once per `up`: in the secrets phase `up` starts a small root helper through `sudo` (`src/firewall.rs`). The helper waits, loads the rules when `up` sends them, and removes them and releases the pf token when its input closes. That happens on Ctrl-C, on `down` from another terminal, and also if sandcastle crashes, so no second prompt is needed and no rules are left behind. The helper ignores terminal signals so Ctrl-C cannot kill it before the cleanup.
+- `up --no-firewall` skips all of this with a warning. It exists for testing without root.
 
 ---
 
@@ -220,7 +221,6 @@ api_key  = "bitwarden://<item-id>/password"
 
 [agent]
 kind    = "opencode"
-version = "<pinned>"
 
 [runtime]
 kind = "apple-container"
@@ -359,7 +359,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** design verified by the shell spike; build steps 1 and 2 are done. Work happens on the `spike` branch until v0.1.
+**Status:** design verified by the shell spike; build steps 1 to 3 are done, step 3 pending the owner's test. Work happens on the `spike` branch until v0.1.
 
 **Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 
@@ -379,7 +379,7 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 
 1. **Skeleton that starts a box. Done 2026-11-12.** Checked by hand: `init` builds the image; `up` starts a box as uid 1001 with read-only root, no capabilities and no internet, UI on the box address only, API answering 401; Ctrl-C and `down` stop it; a second `up` keeps the volumes; `reset` removes everything. The secrets trait is not in the tree yet; it arrives with step 3. Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
 2. **Relay. Done 2026-11-12**, except that the web UI has not been tried in a real browser yet (owner to check) and it ran against a local fake gateway, not the real one. Verified end to end with OpenCode in the box: one-time link and cookie, Host and Origin refusals, Basic Auth injection, npm, Git and Node `fetch` through the egress proxy, refusal of other hosts, key swap, streamed answers arriving chunk by chunk, `opencode run` answering through the relay. The parts: egress proxy (CONNECT allowlist, log of refused hosts); LLM relay (key swap, streaming); UI gateway (one-time link, cookie, Host and Origin checks, Basic Auth injection, streaming pass-through). The key comes from an environment variable until step 3. Done when the owner can chat in the browser and tests cover allowlist matching, Host/Origin checks and "key never in logs or errors".
-3. **Secrets phase and pf.** Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
+3. **Secrets phase and pf. Written 2026-11-12, not yet run with a real vault or with root** (the session that wrote it had neither). Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
 4. **Git and release.** `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
 
 **After v0.1:**

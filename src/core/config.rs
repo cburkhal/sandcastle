@@ -15,11 +15,19 @@ kind = "opencode"
 [runtime]
 kind = "apple-container"
 
+# Where secret references below are looked up.
+[secrets]
+kind = "bitwarden"
+
 # The OpenAI-compatible gateway the agent's model requests go to. Fill this in.
-# The key is not stored here: until the Bitwarden integration exists it is
-# read from the environment variable SANDCASTLE_LLM_KEY.
+# api_key must be a reference, never the key itself:
+#   bitwarden://<item name or id>/password   read from Bitwarden at `sandcastle up`
+#   env://NAME                               read from an environment variable
+# base_url may be written out or be a reference too, for example
+#   bitwarden://<item>/uri   (the item's website field)
 # [llm]
 # base_url = "https://<litellm-host>"
+# api_key  = "bitwarden://<item>/password"
 
 # Hosts the box may open HTTPS connections to, through the relay. Exact names.
 [egress]
@@ -36,6 +44,8 @@ memory = "4G"
 pub struct Config {
     pub agent: Kind,
     pub runtime: Kind,
+    #[serde(default = "default_secrets")]
+    pub secrets: Kind,
     pub llm: Option<Llm>,
     #[serde(default)]
     pub egress: Egress,
@@ -47,6 +57,11 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Llm {
     pub base_url: String,
+    pub api_key: String,
+}
+
+fn default_secrets() -> Kind {
+    Kind { kind: "bitwarden".into() }
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -93,6 +108,9 @@ pub fn parse(text: &str) -> Result<Config> {
     if config.runtime.kind != "apple-container" {
         bail!("unknown runtime kind \"{}\" (supported: \"apple-container\")", config.runtime.kind);
     }
+    if config.secrets.kind != "bitwarden" {
+        bail!("unknown secrets kind \"{}\" (supported: \"bitwarden\")", config.secrets.kind);
+    }
     Ok(config)
 }
 
@@ -131,10 +149,13 @@ mod tests {
     fn llm_and_egress_are_read() {
         let config = parse(
             "[agent]\nkind = \"opencode\"\n[runtime]\nkind = \"apple-container\"\n\
-             [llm]\nbase_url = \"https://gw.example/api\"\n[egress]\nallow = [\"example.org\"]\n",
+             [llm]\nbase_url = \"https://gw.example/api\"\napi_key = \"bitwarden://item/password\"\n[egress]\nallow = [\"example.org\"]\n",
         )
         .unwrap();
-        assert_eq!(config.llm.unwrap().base_url, "https://gw.example/api");
+        let llm = config.llm.unwrap();
+        assert_eq!(llm.base_url, "https://gw.example/api");
+        assert_eq!(llm.api_key, "bitwarden://item/password");
+        assert_eq!(config.secrets.kind, "bitwarden");
         assert_eq!(config.egress.allow, ["example.org"]);
     }
 

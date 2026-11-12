@@ -2,7 +2,7 @@
 
 One OpenCode instance per Git repo, each in its own Apple `container` VM on macOS. The LLM key and Git credentials never enter the VM.
 
-Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. Not built yet: reading the key from Bitwarden by itself, the pf firewall rules, and `sandcastle fetch`. Until the pf rules exist, the box can reach other services running on your Mac. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
+Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. Not built yet: `sandcastle fetch`, which brings the agent's commits back into your repo. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Status: early. The design is verified by a shell spike. The CLI starts a hardene
 - Bitwarden CLI `bw` (tested with 2026.10.1).
 - Homebrew, for `bw`, Rust and the spike's proxy.
 - Rust, to build sandcastle (`brew install rust`; tested with 1.99.1).
-- Admin rights: the pf rule that keeps the box away from host services needs `sudo`.
+- Admin rights: the firewall (pf) rules that keep the box away from other services on the Mac need `sudo`, once in `init` and once per `up`.
 
 ## Install Apple `container`
 
@@ -106,29 +106,47 @@ OpenCode is pinned to an exact version and taken from the GitHub release, not fr
 
 ## Build and use
 
+Run these in the repository root:
+
 ```
 cargo build --release
-./target/release/sandcastle init      # writes ~/.config/sandcastle/config.toml, builds the box image
+./target/release/sandcastle init
 ```
 
-Edit `~/.config/sandcastle/config.toml`: set `[llm] base_url` to your gateway and adjust the `[egress] allow` list.
+`init` writes `~/.config/sandcastle/config.toml`, adds one line (`anchor "sandcastle/*"`) to `/etc/pf.conf` and builds the box image. It asks for your macOS password for the `/etc/pf.conf` change and keeps a backup next to it.
+
+Edit `~/.config/sandcastle/config.toml`:
+
+```toml
+[llm]
+base_url = "https://<litellm-host>"
+api_key  = "bitwarden://<item name or id>/password"
+```
+
+Then, in any Git repository (use the full path to the binary, or put it on your `PATH`):
 
 ```
-cd <a Git repository>
-export BW_SESSION="$(bw unlock --raw)"
-SANDCASTLE_LLM_KEY="$(bw get password <item-id>)" sandcastle up
+sandcastle up
 ```
 
-`up` checks the gateway and the key, starts the box and the relay, and opens the browser on a one-time login link. Ctrl-C stops the box. The environment variable is a stopgap until sandcastle reads the key from Bitwarden itself.
+`up` asks for two passwords at the start and says which is which:
+
+- your **macOS login password** (sudo), to load the firewall rules for the box,
+- your **Bitwarden master password**, to read the key.
+
+After that nothing prompts. It checks the gateway and the key, starts the box and the relay, and opens the browser on a one-time login link. Ctrl-C stops the box and removes the firewall rules.
 
 ```
 sandcastle up --no-browser            # print the login link instead of opening it
 sandcastle ls                         # boxes, status, address
 sandcastle down                       # stop the box from another terminal; volumes are kept
 sandcastle reset                      # delete the box with its network and volumes
+sandcastle doctor                     # check config, image and the pf anchor line
 ```
 
 While a box runs, hosts it tried to reach but was refused are printed once in the `up` terminal. The full relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`.
+
+`up --no-firewall` starts without root and without firewall rules. The box can then reach other services on your Mac; use it for testing only.
 
 What exists on the Mac afterwards: the config file, state under `~/Library/Application Support/sandcastle/`, the image `sandcastle-opencode:<version>`, and per repo one network and two volumes named after the box. `reset` removes the per-repo parts.
 

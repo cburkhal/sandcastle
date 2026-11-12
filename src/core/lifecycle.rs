@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use super::config;
 use super::state::{self, BoxRecord};
 use crate::agent::Agent;
+use crate::firewall;
 use crate::runtime::{BoxSpec, BoxState, Mount, SandboxRuntime};
 
 /// What every command needs: where the user's files are and the two modules.
@@ -18,12 +19,15 @@ pub struct App<'a> {
     pub agent: &'a dyn Agent,
 }
 
-/// `sandcastle init`: write the default config and build the image.
-pub fn init(cx: &App) -> Result<()> {
+/// `sandcastle init`: write the default config, prepare pf and build the image.
+pub fn init(cx: &App, with_firewall: bool) -> Result<()> {
     if config::write_default(cx.home)? {
         println!("Wrote {}", config::path(cx.home).display());
     }
     config::load(cx.home)?;
+    if with_firewall {
+        firewall::install_anchor()?;
+    }
 
     let image = cx.agent.image();
     let build_dir = state::dir(cx.home).join("build");
@@ -38,6 +42,57 @@ pub fn init(cx: &App) -> Result<()> {
         .image_digest(&image.tag)?
         .ok_or_else(|| anyhow!("image {} is missing after the build", image.tag))?;
     println!("Image {} ready ({digest})", image.tag);
+    Ok(())
+}
+
+/// `sandcastle doctor`: check what `up` relies on. Prompts for nothing.
+pub fn doctor(cx: &App) -> Result<()> {
+    let mut problems = 0;
+    let mut check = |ok: bool, good: String, bad: String| {
+        if ok {
+            println!("ok       {good}");
+        } else {
+            println!("PROBLEM  {bad}");
+            problems += 1;
+        }
+    };
+
+    let config = config::load(cx.home);
+    check(
+        config.is_ok(),
+        format!("config {}", config::path(cx.home).display()),
+        config.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default(),
+    );
+    if let Ok(config) = &config {
+        check(
+            config.llm.is_some(),
+            "LLM gateway configured".into(),
+            "no [llm] section in the config: `up` cannot start".into(),
+        );
+    }
+
+    let image = cx.agent.image();
+    match cx.runtime.image_digest(&image.tag) {
+        Ok(digest) => check(
+            digest.is_some(),
+            format!("box image {}", image.tag),
+            format!("box image {} is not built; run `sandcastle init`", image.tag),
+        ),
+        Err(error) => check(false, String::new(), format!("the sandbox runtime does not work: {error:#}")),
+    }
+
+    // A macOS update may replace /etc/pf.conf and drop the line.
+    let anchor = firewall::anchor_configured().unwrap_or(false);
+    check(
+        anchor,
+        format!("pf anchor line in {}", firewall::PF_CONF),
+        format!("{} has no sandcastle anchor line; run `sandcastle init`", firewall::PF_CONF),
+    );
+
+    if problems > 0 {
+        bail!("{problems} problem(s) found");
+    }
+    println!("Everything `sandcastle up` relies on is in place.");
     Ok(())
 }
 

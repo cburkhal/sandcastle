@@ -7,8 +7,9 @@
 //! 4. the relay's box-side listeners, which can only bind once the box runs,
 //! 5. the UI gateway and the one-time login link.
 //!
-//! Not here yet (build step 3): the Bitwarden secrets phase and the pf rules.
-//! Until the pf rules exist, the box can reach other services on this Mac.
+//! Everything that can prompt (sudo for the firewall, the secret store's
+//! master password) happens in step 1, the secrets phase. After it, `up` runs
+//! unattended.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -23,32 +24,31 @@ use tokio::net::TcpListener;
 use super::config::{self, Config};
 use super::lifecycle::{self, App};
 use super::state::{self, BoxRecord};
+use crate::firewall::{self, Firewall};
 use crate::relay::egress::Egress;
 use crate::relay::llm::LlmRelay;
 use crate::relay::log::Log;
 use crate::relay::ui::UiGateway;
 use crate::relay::{self, http};
 use crate::runtime::{BoxSpec, BoxState, Mount, Network};
-use crate::secrets::Secret;
+use crate::secrets::{Resolver, SecretStore};
 
 /// Ports of the relay on the box network's gateway address.
 const LLM_PORT: u16 = 4180;
 const EGRESS_PORT: u16 = 4181;
-/// Where the LLM key comes from until the secrets module exists.
-const KEY_VARIABLE: &str = "SANDCASTLE_LLM_KEY";
 
-pub async fn run(cx: &App<'_>, path: &Path, open_browser: bool) -> Result<()> {
+pub struct Options {
+    pub open_browser: bool,
+    /// Load pf rules for the box. Off only for testing without root.
+    pub firewall: bool,
+}
+
+pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options: Options) -> Result<()> {
     // --- 1. Nothing is created until these all hold. ---
     let config = config::load(cx.home)?;
     let llm_config = config.llm.as_ref().ok_or_else(|| {
         anyhow!("no LLM gateway configured: add [llm] base_url to {}", config::path(cx.home).display())
     })?;
-    let key = Secret::new(
-        std::env::var(KEY_VARIABLE).map_err(|_| anyhow!("the environment variable {KEY_VARIABLE} is not set"))?,
-    );
-    // Child processes (`container`, the browser) have no business with the key.
-    std::env::remove_var(KEY_VARIABLE);
-
     let repo = state::repo_root(path)?;
     let name = state::box_name(&repo);
     let image = cx.agent.image();
@@ -60,12 +60,27 @@ pub async fn run(cx: &App<'_>, path: &Path, open_browser: bool) -> Result<()> {
         bail!("box {name} is already running; stop it with `sandcastle down`");
     }
 
+    // The secrets phase: the only part of `up` that may ask for a password.
+    let firewall = if options.firewall {
+        if !firewall::anchor_configured()? {
+            bail!("{} lacks sandcastle's anchor line; run `sandcastle init`", firewall::PF_CONF);
+        }
+        Some(Firewall::start(&name)?)
+    } else {
+        eprintln!("WARNING: --no-firewall: the box can reach other services on this Mac, and");
+        eprintln!("         devices on your network may be able to reach the box.");
+        None
+    };
+    let mut resolver = Resolver::new(store);
+    let base_url = resolver.plain_or_reference(&llm_config.base_url, "the LLM gateway URL")?;
+    let key = resolver.secret(&llm_config.api_key, "the LLM key")?;
+
     let box_dir = state::box_dir(cx.home, &name);
     fs::create_dir_all(box_dir.join("config"))?;
     let log = Log::to_file(&box_dir.join("relay.log"), true)?;
     log.line(&format!("up: starting box {name}"));
 
-    let llm = Arc::new(LlmRelay::new(&llm_config.base_url, &key, log.clone())?);
+    let llm = Arc::new(LlmRelay::new(&base_url, &key, log.clone())?);
     drop(key);
     let models = llm.models().await?;
     println!("LLM gateway reachable, {} models.", models.len());
@@ -95,9 +110,16 @@ pub async fn run(cx: &App<'_>, path: &Path, open_browser: bool) -> Result<()> {
     let spec = box_spec(cx, &config, &record, &image.tag, &box_dir.join("config"), gateway, &password);
     cx.runtime.run(&spec)?;
 
-    let result = serve(cx, &record, gateway, llm, &config, log.clone(), ui_listener, ui_port, &password, open_browser).await;
+    let mut firewall = firewall;
+    let result = serve(
+        cx, &record, gateway, &network.subnet, llm, &config, log.clone(), ui_listener, ui_port, &password,
+        firewall.as_mut(), options.open_browser,
+    )
+    .await;
     log.line("up: stopping");
     let stopped = lifecycle::stop(cx, &name);
+    // The rules go only after the box is gone.
+    drop(firewall);
     result.and(stopped)
 }
 
@@ -106,12 +128,14 @@ async fn serve(
     cx: &App<'_>,
     record: &BoxRecord,
     gateway: IpAddr,
+    subnet: &str,
     llm: Arc<LlmRelay>,
     config: &Config,
     log: Log,
     ui_listener: TcpListener,
     ui_port: u16,
     password: &str,
+    firewall: Option<&mut Firewall>,
     open_browser: bool,
 ) -> Result<()> {
     let name = &record.name;
@@ -120,9 +144,16 @@ async fn serve(
         error.context(format!("box {name} did not come up. Last output of the box:\n{logs}"))
     };
 
-    // --- 4. The relay's box-side listeners. ---
+    // --- 4. Firewall rules, then the relay's box-side listeners. ---
+    // The agent waits for the relay, so it starts only after the rules are in place.
     let box_ip = box_address(cx, name).await.map_err(failed)?;
     let wait = Duration::from_secs(20);
+    let agent_port = cx.agent.ui_port();
+    if let Some(firewall) = firewall {
+        let interface = host_interface(gateway, wait).await?;
+        firewall.load(&firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port))?;
+        log.line(&format!("up: firewall rules loaded on {interface}"));
+    }
     let llm_listener = relay::bind_on_gateway(SocketAddr::new(gateway, LLM_PORT), wait).await?;
     let egress_listener = relay::bind_on_gateway(SocketAddr::new(gateway, EGRESS_PORT), wait).await?;
     // Only the box may use them; the host sees the box's own address (spike item 1).
@@ -132,7 +163,6 @@ async fn serve(
     tokio::spawn(http::serve(llm_listener, Some(box_ip), log.clone(), move |request| handler.clone().handle(request)));
 
     // --- 5. The agent starts once the relay answers; then the UI gateway. ---
-    let agent_port = cx.agent.ui_port();
     wait_until_healthy(cx, name, box_ip, agent_port).await.map_err(failed)?;
 
     let ui = Arc::new(UiGateway::new(
@@ -203,6 +233,18 @@ fn box_spec(
         Mount::Bind { source: config_dir.to_path_buf(), target: agent.config_dir().into(), readonly: true },
     ];
     spec
+}
+
+/// The host interface of the box network. It appears shortly after the box starts.
+async fn host_interface(gateway: IpAddr, wait: Duration) -> Result<String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match firewall::interface_for(gateway) {
+            Ok(interface) => return Ok(interface),
+            Err(error) if Instant::now() > deadline => return Err(error),
+            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+        }
+    }
 }
 
 /// The box's address on its network, once the runtime has assigned one.
