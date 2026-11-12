@@ -297,6 +297,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Shell spike first, then Rust (Q4) | Unverified vmnet assumptions decide the design |
 | Agent config bundled in sandcastle (Q5) | One repo, one pin |
 | Invisible login confirmed (Q6) | See 2.2 |
+| pf rule limits the box to the relay's ports on the host (pending spike item 9) | Spike item 1: a box on an internal network reaches any host service on `0.0.0.0`; costs root at `up`/`down` |
 | Modules for secrets, agent, runtime | Replaceable later at minimal cost; no speculative adapters |
 | Scope: owner only | Other roles dropped from scope |
 | Name: sandcastle | Chosen by owner |
@@ -322,16 +323,21 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 **Step 1: manual spike (about one hour, shell only, in `spike/`).** These assumptions about Apple `container` are unverified and decide whether the design works:
 
-- [ ] A container on a `--internal` network can reach a listener on the host's address for that network, but not the internet.
-- [ ] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake.
+- [x] A container on a `--internal` network can reach a listener on the host's address for that network, but not the internet. (Passed 2026-11-12, see `spike/NOTES.md`.)
+- [x] A host listener can bind to that vmnet gateway IP only (not `0.0.0.0`) and survives sleep/wake. (Passed 2026-11-12.)
 - [ ] With `--no-dns` and `HTTPS_PROXY`, OpenCode installs from npm through a stock allowlisting proxy (e.g. tinyproxy) and reaches LiteLLM through a plain HTTP forwarder.
 - [ ] The relay can reach port 4096 on the box over the internal network; another LAN device cannot.
 - [ ] OpenCode runs with `--read-only`, tmpfs `/tmp`, a home volume and a workspace volume.
 - [ ] Tools that ignore proxy variables fail cleanly and the ones we need can be made to honour them (Node's built-in `fetch` needs `NODE_USE_ENV_PROXY=1`; check Bun, npm, Git).
 - [ ] Clone-and-fetch works: the box clones from a read-only mount of the host `.git`; the host fetches the box's commits through `container exec ... git upload-pack` into `refs/remotes/sandcastle/*`.
 - [ ] A non-root user in the box can read the read-only `.git` mount and write the named volumes (UID mapping).
+- [ ] A pf rule limits the box to the relay's ports on the host (added 2026-11-12; `spike/09-pf-host-isolation.sh`, needs sudo).
 
-Fallback if the first two fail: a small proxy container attached to two networks (internal + default) instead of a host listener.
+Spike findings so far (details in `spike/NOTES.md`):
+- A box on an internal network can reach every service on the Mac that listens on `0.0.0.0`, through the gateway address and the Mac's LAN address. Decision: close this with a pf rule.
+- The gateway address exists on the host only while a box is running on the network. The relay cannot bind the box-side address before `container run`, so steps 4 and 5 of `up` in section 4 must swap for that listener. Section 4 is not rewritten yet.
+
+Fallback if the first two fail (not needed, both passed): a small proxy container attached to two networks (internal + default) instead of a host listener.
 
 **Roadmap:**
 1. Spike (above).
