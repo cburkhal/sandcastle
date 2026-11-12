@@ -16,7 +16,7 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | **pass**, with the volume ownership fix (2026-11-12) |
 | 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | **pass** (2026-11-12, run by the owner, needs sudo) |
 
-All nine scripts have run. Still open: the LAN-device half of item 4, and a re-run of item 9 with the added `block out` rule (needs sudo).
+All nine scripts have run. Still open: the LAN-device half of item 4, with the pf rules loaded.
 
 ## Verdict on the fallback (items 1 and 2)
 
@@ -134,16 +134,19 @@ Host to box passed. LAN isolation is not shown yet.
 
 Finding: **`net.inet.ip.forwarding` is 1 on this Mac**, so it routes between interfaces. A device on the LAN that adds a route to the box subnet through the Mac could then reach the box directly. The pf rules from item 9 did not cover this, because they only filter traffic coming in from the box. Mitigations:
 
-1. Added to rule set B in item 9: `block return out quick on <bridge> all`, after the rule that lets the host's gateway address reach port 4096. Forwarded LAN traffic leaves through the bridge with a LAN source address and is dropped. **Not run yet** (needs sudo).
+1. Added to rule set B in item 9: `block return out quick on <bridge> all`, after the rule that lets the host's gateway address reach port 4096. Forwarded LAN traffic leaves through the bridge with a LAN source address and is dropped. Run by the owner on 2026-11-12: item 9 passes with this rule, and host to box still works.
 2. OpenCode's API needs the per-run password anyway (item 5), so this is a second layer, not the only one.
 
 Not known: who turned forwarding on. `container` or vmnet NAT for the default network is the likely cause; sandcastle should not rely on it being off.
 
-Manual check still to do, with a second device on the LAN:
+Manual check, with a second device on the LAN:
 
 ```
-./04-ui-port-reachability.sh hold      # prints the two curl commands to try from the other device
+./04-ui-port-reachability.sh hold-pf   # box running, pf rules loaded (sudo); prints the commands for the other device
+./04-ui-port-reachability.sh clean
 ```
+
+The owner ran the baseline (`hold`, no pf rules) on 2026-11-12: the request to the Mac's LAN address failed, as it should. The request to the box address returned the page. It is not recorded which machine that second request came from: from the Mac itself it is expected, from another device it would confirm the hole. The run with pf rules loaded is still to do.
 
 ## Item 6: proxy variables
 

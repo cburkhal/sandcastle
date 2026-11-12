@@ -138,7 +138,7 @@ Model: clone-and-fetch. The agent never writes to the host repo, so nothing it p
 - The user reviews, merges and pushes with plain Git on macOS.
 - Tradeoff accepted by the owner: the agent's working tree cannot be opened live in a macOS editor. Uncommitted work in the box is invisible to the host until committed and fetched.
 
-Mechanism (verified by spike item 7; confirming it over a relay Git proxy is still question 7):
+Mechanism (verified by spike item 7, confirmed by the owner):
 - Seed: the host repo's `.git` directory is mounted read-only into the box as the clone source. Only `.git`, not the working tree, so untracked files such as `.env` stay out of the box. Check that `.git/config` holds no credentials in remote URLs before mounting.
 - Seed details: the mount root shows up as root-owned in the box, so the box's Git config needs `safe.directory` for it. Whatever is mounted is readable by every user in the box, regardless of host file modes.
 - Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream. In the spike: `git -c protocol.ext.allow=always fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The `ext` transport is enabled for that one command only; exec needs `-i`.
@@ -148,7 +148,7 @@ Mechanism (verified by spike item 7; confirming it over a relay Git proxy is sti
 
 Needed because of spike items 1 and 4: a box on an internal network reaches host services on all addresses, and the Mac forwards IP, so a LAN device with a route could reach the box.
 
-Rules per box, by bridge interface (verified in spike item 9, except the last line, which is added for item 4 and not run yet):
+Rules per box, by bridge interface (verified in spike item 9):
 
 ```
 pass in quick on <bridge> inet proto tcp from <subnet> to <gateway> port <relay ports>
@@ -330,6 +330,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Agent config bundled in sandcastle (Q5) | One repo, one pin |
 | Invisible login confirmed (Q6) | See 2.2 |
 | pf rule limits the box to the relay's ports on the host (spike item 9 passed) | Spike item 1: a box on an internal network reaches any host service on `0.0.0.0`; costs root at `up`/`down` |
+| Clone-and-fetch through a read-only `.git` mount and `upload-pack` via exec (Q7) | Spike item 7 passed as proposed; no Git proxy in the relay needed |
 | pf anchor as one line in `/etc/pf.conf`, checked by `doctor` | Clean namespace instead of squatting under `com.apple/*`; macOS updates may remove the line, so it is checked |
 | Build order: relay before the secrets module | The risky part is built and tested first; an environment variable supplies the key in the meantime |
 | Relay keeps its own one-time link; OpenCode 2.x pairing links are not used | Relay needs the cookie and Host/Origin checks anyway; no dependency on OpenCode's pairing |
@@ -343,13 +344,11 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 
 ## 8. Open questions (numbered as in the design doc)
 
-Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 3 (default allowlist as proposed, GitHub included), 4 (shell spike first), 5 (bundled), 6 (yes).
+Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 3 (default allowlist as proposed, GitHub included), 4 (shell spike first), 5 (bundled), 6 (yes), 7 (clone-and-fetch as described in 2.5, confirmed after the spike).
 
 Still open:
 
 2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected, and `github.com` reachable through a method-aware relay path, not a CONNECT tunnel.)
-7. Clone-and-fetch mechanism: is the proposal in 2.5 (read-only `.git` mount as source, `upload-pack` via exec for fetch) right, or should the relay proxy Git smart HTTP instead? The spike shows the proposal works as written (item 7). Recommendation: keep it; v0.1 implements it. Owner to confirm.
-
 Do not silently decide these. Ask the owner, or implement the proposal and flag it.
 
 ---
@@ -368,7 +367,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 - [x] 6. Node `fetch`, npm, Git and Bun honour the proxy variables; without them they fail after a 20 s timeout.
 - [x] 7. Clone-and-fetch works as proposed in 2.5.
 - [x] 8. A non-root user reads the read-only `.git` mount and writes the volumes after the ownership fix.
-- [x] 9. A pf rule set by interface limits the box to the relay. **Open:** re-run with the added `block out` rule.
+- [x] 9. A pf rule set by interface limits the box to the relay, including the `block out` rule added for item 4.
 
 The fallback (a proxy container on two networks instead of a host listener) is not needed.
 
