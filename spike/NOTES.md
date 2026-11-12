@@ -8,7 +8,7 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | --- | --- | --- | --- |
 | 1 | Internal network: box reaches host listener, not the internet | `01-internal-network.sh` | **pass** (2026-11-12) |
 | 2 | Host listener binds the gateway IP only; survives sleep/wake | `02-gateway-bind.sh` | **pass**, including sleep/wake (2026-11-12) |
-| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | written, not run |
+| 3 | `--no-dns` + proxy: npm install via tinyproxy, LiteLLM via HTTP forwarder | `03-proxy-install-llm.sh` | **install: pass, LiteLLM: not tested yet** (2026-11-12) |
 | 4 | Host reaches box port 4096; LAN device cannot | `04-ui-port-reachability.sh` | written, not run |
 | 5 | OpenCode with `--read-only`, tmpfs `/tmp`, home + workspace volumes | `05-readonly-root.sh` | written, not run |
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
@@ -55,6 +55,30 @@ The owner re-ran the default mode on 2026-11-12 with the same result (0 failed c
 
 Passed. The owner ran `hold`, slept and woke the Mac, then `check` on 2026-11-12: the listener was still bound to the gateway address and the box reached it. Result reported by the owner; the output is not recorded here.
 
+## Item 3: install through the proxy, LiteLLM through a forwarder
+
+Install half passed, with tinyproxy 1.11.3 (Homebrew) and `opencode-ai` 1.19.5.
+
+- Box started with `--no-dns` and the proxy variables; tinyproxy bound to the gateway address with `FilterDefaultDeny` and one allowed host, `registry.npmjs.org`.
+- `npm install -g opencode-ai@1.19.5` worked through the proxy in 5 s, using only `CONNECT registry.npmjs.org:443`. No other host was requested, so the OpenCode binary comes from npm, not from a separate download host.
+- `opencode --version` runs.
+- A request to `example.com` was refused by the proxy ("Proxying refused on filtered domain").
+
+Findings:
+
+1. `--no-dns` does not leave the box without a resolver. `/etc/resolv.conf` then holds `nameserver 1.1.1.1` and `1.0.0.1`. They are unreachable on the internal network, so nothing leaks, but lookups by tools that ignore the proxy will time out instead of failing at once. Item 6 measures that. An empty resolver file or `--dns` pointing at an address that refuses quickly may be better.
+2. Node prints an `EnvHttpProxyAgent is experimental` warning with `NODE_USE_ENV_PROXY=1` (Node 22). Harmless, but it is noise in every npm run.
+
+### Not tested yet: LiteLLM
+
+The second half needs the real LiteLLM host and a key, which this session does not have. Run:
+
+```
+OPENCODE_VERSION=1.19.5 LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... OPENCODE_MODEL=<id> ./03-proxy-install-llm.sh
+```
+
+`OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 1.19.5.
+
 ## Item 9: pf rule (in progress)
 
 Open questions the script answers:
@@ -84,7 +108,7 @@ OPENCODE_VERSION=<exact> ./05-readonly-root.sh      # also builds the spike imag
 ./09-pf-host-isolation.sh                           # asks for sudo
 ```
 
-- Items 3 and 6 need `tinyproxy` on the host (`brew install tinyproxy`); it is not installed.
+- Items 3 and 6 need `tinyproxy` on the host. It was installed with `brew install tinyproxy` on 2026-11-12; remove it with `brew uninstall tinyproxy` after the spike.
 - Item 3 needs the LiteLLM host and key in the environment. Do not put them in a file in this repo.
 - Every run is copied to `spike/.state/<script>.log`.
 - Each script removes its own boxes, volumes and the `sc-spike` network on exit. Scratch files go to `spike/.state/` (git-ignored).
