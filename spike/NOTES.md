@@ -14,7 +14,7 @@ Environment: macOS 27.0.1 (26A434), arm64, Apple `container` 1.7.1 (commit a15b4
 | 6 | Proxy variables: Node fetch, npm, Git, Bun | `06-proxy-variables.sh` | written, not run |
 | 7 | Clone from read-only `.git` mount; fetch via `container exec ... git upload-pack` | `07-clone-and-fetch.sh` | written, not run |
 | 8 | Non-root user reads the `.git` mount and writes the volumes | `08-uid-mapping.sh` | written, not run |
-| 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | run by the owner, **1 failed check**, under investigation (needs sudo) |
+| 9 | pf rule: box reaches only the relay on the host (added after item 1) | `09-pf-host-isolation.sh` | **pass** (2026-11-12, run by the owner, needs sudo) |
 
 Scripts 4 to 8 have only been syntax-checked. Expect to fix them on first run.
 
@@ -79,16 +79,31 @@ OPENCODE_VERSION=1.19.5 LITELLM_BASE_URL=https://<litellm-host> LITELLM_KEY=... 
 
 `OPENCODE_MODEL` enables an `opencode run` round trip. The OpenCode config in the script is unverified against 1.19.5.
 
-## Item 9: pf rule (in progress)
+## Item 9: pf rule
 
-Open questions the script answers:
+Passed. pf sees vmnet traffic and can limit the box to the relay.
 
-- Does pf see vmnet bridge traffic at all? If not, the pf approach is dead and the choice is between accepting the hole and the two-network proxy container.
-- Rule set A filters by source subnet (IPv4 only). Rule set B filters by interface, which also covers IPv6 and link-local addresses, and adds a stateful rule for host to box port 4096. The script reports which one holds.
-- Does a box still start and get its address with the block rule loaded?
-- Does the bridge interface name stay the same across box restarts? If not, rules by interface name go stale.
+Baseline without rules: the box reached a second host service (listening on `::`) through the gateway address, the Mac's LAN address and the host's IPv6 link-local address on the bridge.
 
-Costs of the pf approach, known before running it:
+- **Rule set A, by source subnet:** blocks the two IPv4 paths, keeps box to relay and host to box port 4096 working. Leaves the IPv6 link-local path open. Not enough on its own.
+- **Rule set B, by interface (`bridge100`):** blocks all three paths, IPv6 included. Box to relay and host to box port 4096 keep working. This is the one to use:
+
+  ```
+  pass in quick on bridge100 inet proto tcp from <subnet> to <gateway> port <relay ports>
+  pass out quick on bridge100 inet proto tcp from <gateway> to <subnet> port 4096 keep state
+  block return in quick on bridge100 all
+  ```
+
+- With rule set B loaded, a restarted box still got an address (`.3` instead of `.2`, so box addresses are not stable) and all checks held.
+- The interface name stayed `bridge100` across the box restart. One box only; with several boxes on several networks the names will differ and must be looked up per network.
+- Flushing the anchor restores the baseline, so cleanup works.
+- Host to box worked under rule set A without an explicit `pass out` rule. Rule set B keeps the rule anyway, because it is explicit about what is allowed.
+
+The first run reported 1 failed check. The output was not kept, but the likely cause is the script, not pf: it judged the IPv6 path under rule set A as a failure although A does not filter IPv6 by design. With that check made observational, the same IPv6 path shows as open under A and the run has 0 failures.
+
+pf was already enabled when the second run started ("Enabled for 14 minutes", which matches the first run). Either the first run did not release its enable token or something else holds one. Check with `sudo pfctl -s References`; an enabled pf with the stock empty ruleset changes nothing.
+
+Costs of the pf approach:
 
 - Needs root at `up` and at `down`/`reset` (a sudo prompt, or a small privileged helper later). This is new friction against the "nothing to type" goal.
 - The stock `/etc/pf.conf` only evaluates anchors under `com.apple/*`. The spike loads into `com.apple/sandcastle-spike` to avoid editing `/etc/pf.conf`. That is squatting in Apple's namespace; the clean alternative is one added `anchor "sandcastle/*"` line in `/etc/pf.conf`, which macOS updates may overwrite.
