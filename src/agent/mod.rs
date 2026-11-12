@@ -33,6 +33,10 @@ pub trait Agent {
     fn home(&self) -> &str;
     /// Directory that holds the box's clone of the repo; gets its own volume.
     fn workspace(&self) -> &str;
+    /// The box's clone of the repo; the agent works here.
+    fn repo_dir(&self) -> String {
+        format!("{}/repo", self.workspace())
+    }
     /// Directory in the box where the configuration is mounted read-only.
     fn config_dir(&self) -> &str;
     /// Configuration that points the agent at an OpenAI-compatible endpoint
@@ -46,6 +50,7 @@ pub trait Agent {
     fn api_user(&self) -> &str;
     /// Process and environment. `password` protects the agent's API; only the
     /// relay knows it. The agent must not start before `wait_for` (host, port)
-    /// accepts connections: the box runs before the relay can listen.
+    /// accepts connections: the box runs before the relay can listen. By then
+    /// the clone in [`Agent::repo_dir`] exists, and the agent starts in it.
     fn launch(&self, password: &str, wait_for: (&str, u16)) -> Launch;
 }

@@ -4,10 +4,6 @@
 //! terms (image, mounts, env, capabilities), not flags of one tool, so another
 //! runtime can be added later without touching the core.
 //!
-//! Some parts are not called yet: the relay needs `network_inspect` (build
-//! step 2), `fetch` needs `exec` and bind mounts (build step 4). They are part
-//! of the interface in CLAUDE.md and were verified in the spike.
-#![allow(dead_code)]
 
 pub mod apple_container;
 
@@ -135,8 +131,10 @@ pub trait SandboxRuntime {
     fn run_once(&self, spec: &BoxSpec) -> Result<ExecOutput>;
     /// Run a command in a running box. `stdin` is forwarded if given.
     fn exec(&self, name: &str, command: &[String], stdin: Option<&[u8]>) -> Result<ExecOutput>;
-    /// Stop a box; a missing or stopped box is not an error.
-    fn stop(&self, name: &str) -> Result<()>;
+    /// The command line that runs `command` in a box with stdin and stdout
+    /// attached. For programs that must start it themselves, such as Git's
+    /// `ext` transport.
+    fn exec_argv(&self, name: &str, command: &[&str]) -> Vec<String>;
     /// Remove a box, stopping it first; a missing box is not an error.
     fn remove(&self, name: &str) -> Result<()>;
     fn inspect(&self, name: &str) -> Result<BoxStatus>;

@@ -80,7 +80,8 @@ impl Agent for OpenCode {
         // from sandcastle (an address and a number), never from the repo.
         let script = format!(
             "until (exec 3<>/dev/tcp/{host}/{port}) 2>/dev/null; do sleep 0.2; done; \
-             exec opencode serve --hostname 0.0.0.0 --port {UI_PORT}"
+             cd {repo} && exec opencode serve --hostname 0.0.0.0 --port {UI_PORT}",
+            repo = self.repo_dir()
         );
         Launch {
             command: vec!["bash".into(), "-c".into(), script],
@@ -115,7 +116,8 @@ mod tests {
         let launch = OpenCode.launch("pw", ("192.168.128.1", 4180));
         let script = &launch.command[2];
         let wait = script.find("/dev/tcp/192.168.128.1/4180").unwrap();
-        assert!(wait < script.find("opencode serve").unwrap());
+        let cd = script.find("cd /workspace/repo").unwrap();
+        assert!(wait < cd && cd < script.find("opencode serve").unwrap());
     }
 
     #[test]

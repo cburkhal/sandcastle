@@ -4,6 +4,7 @@
 //! goes through the module traits in `runtime`, `agent` and (later) `secrets`.
 
 pub mod config;
+pub mod git;
 pub mod lifecycle;
 pub mod state;
 pub mod up;

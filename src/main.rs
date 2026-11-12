@@ -55,6 +55,11 @@ enum Command {
     },
     /// List boxes
     Ls,
+    /// Bring the box's commits into this repo as sandcastle/<branch>
+    Fetch {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Delete the box for a repo with its network and volumes
     Reset {
         #[arg(default_value = ".")]
@@ -87,6 +92,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Down { path } => lifecycle::down(&cx, &path),
         Command::Ls => lifecycle::list(&cx),
+        Command::Fetch { path } => crate::core::git::fetch(&cx, &path),
         Command::Reset { path, yes } => lifecycle::reset(&cx, &path, yes),
     }
 }

@@ -251,11 +251,10 @@ impl SandboxRuntime for AppleContainer {
         Ok(exec_output(call(&args, stdin)?))
     }
 
-    fn stop(&self, name: &str) -> Result<()> {
-        if self.inspect(name)?.state == BoxState::Running {
-            call_ok(&strings(&["stop", name]))?;
-        }
-        Ok(())
+    fn exec_argv(&self, name: &str, command: &[&str]) -> Vec<String> {
+        let mut argv = strings(&[BIN, "exec", "--interactive", name]);
+        argv.extend(command.iter().map(|word| word.to_string()));
+        argv
     }
 
     fn remove(&self, name: &str) -> Result<()> {

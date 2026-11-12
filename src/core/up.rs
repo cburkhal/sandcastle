@@ -22,6 +22,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use tokio::net::TcpListener;
 
 use super::config::{self, Config};
+use super::git;
 use super::lifecycle::{self, App};
 use super::state::{self, BoxRecord};
 use crate::firewall::{self, Firewall};
@@ -50,6 +51,7 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
         anyhow!("no LLM gateway configured: add [llm] base_url to {}", config::path(cx.home).display())
     })?;
     let repo = state::repo_root(path)?;
+    let source = git::source_dir(&repo)?;
     let name = state::box_name(&repo);
     let image = cx.agent.image();
     let image_digest = cx
@@ -107,7 +109,7 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
 
     // --- 3. The box. From here on, failures must remove it again. ---
     let password = relay::random_token(32)?;
-    let spec = box_spec(cx, &config, &record, &image.tag, &box_dir.join("config"), gateway, &password);
+    let spec = box_spec(cx, &config, &record, &image.tag, &box_dir.join("config"), &source, gateway, &password);
     cx.runtime.run(&spec)?;
 
     let mut firewall = firewall;
@@ -154,6 +156,9 @@ async fn serve(
         firewall.load(&firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port))?;
         log.line(&format!("up: firewall rules loaded on {interface}"));
     }
+    // The box's clone must exist before the agent starts in it.
+    git::seed(cx, name).map_err(failed)?;
+
     let llm_listener = relay::bind_on_gateway(SocketAddr::new(gateway, LLM_PORT), wait).await?;
     let egress_listener = relay::bind_on_gateway(SocketAddr::new(gateway, EGRESS_PORT), wait).await?;
     // Only the box may use them; the host sees the box's own address (spike item 1).
@@ -181,6 +186,7 @@ async fn serve(
     println!("Box {name} is up for {}", record.repo.display());
     println!("  Open this link to chat (it works once): {login_url}");
     println!("  Allowed hosts: {}", config.egress.allow.join(", "));
+    println!("  The agent works on its own clone. `sandcastle fetch` (in another terminal) brings its commits here.");
     println!("Press Ctrl-C to stop the box.");
     if open_browser {
         // `open` is the macOS way to hand a URL to the default browser.
@@ -199,6 +205,7 @@ fn box_spec(
     record: &BoxRecord,
     image: &str,
     config_dir: &Path,
+    source: &Path,
     gateway: IpAddr,
     password: &str,
 ) -> BoxSpec {
@@ -231,6 +238,8 @@ fn box_spec(
         Mount::Volume { name: record.home_volume(), target: agent.home().into() },
         Mount::Volume { name: record.workspace_volume(), target: agent.workspace().into() },
         Mount::Bind { source: config_dir.to_path_buf(), target: agent.config_dir().into(), readonly: true },
+        // Only `.git`, not the working tree: untracked files such as `.env` stay on the host.
+        Mount::Bind { source: source.to_path_buf(), target: git::SOURCE_MOUNT.into(), readonly: true },
     ];
     spec
 }

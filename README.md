@@ -2,7 +2,7 @@
 
 One OpenCode instance per Git repo, each in its own Apple `container` VM on macOS. The LLM key and Git credentials never enter the VM.
 
-Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. Not built yet: `sandcastle fetch`, which brings the agent's commits back into your repo. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
+Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
 
 ## Requirements
 
@@ -143,6 +143,20 @@ sandcastle down                       # stop the box from another terminal; volu
 sandcastle reset                      # delete the box with its network and volumes
 sandcastle doctor                     # check config, image and the pf anchor line
 ```
+
+### Getting the agent's work
+
+The agent never writes to your repo. It works on its own clone inside the box, made from your repo's committed history; untracked files such as `.env` stay on your Mac. While the box is running, from another terminal in the repo:
+
+```
+sandcastle fetch                      # the agent's branches appear as sandcastle/<branch>
+git log -p HEAD..sandcastle/<branch>  # review
+git merge sandcastle/<branch>         # take the changes
+```
+
+`fetch` checks nothing out and merges nothing. Review before you merge: treat the commits like a pull request from a stranger. Work the agent has not committed stays in the box. New commits of yours reach the box at the next `up`, or when the agent runs `git fetch origin`.
+
+`up` refuses a repo whose `.git/config` contains a token in a remote URL, because the box can read that file.
 
 While a box runs, hosts it tried to reach but was refused are printed once in the `up` terminal. The full relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`.
 

@@ -6,7 +6,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); build steps 1 to 3 of 4 done** (box, relay, Bitwarden and pf; `fetch` is missing). The Bitwarden and pf code has not been run by the owner yet. See "Current status and next steps".
+- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); all four build steps are written and run** (box, relay, Bitwarden, pf, `fetch`). Not done: an automated end-to-end check, and the merge to `main` with the v0.1 tag. See "Current status and next steps".
 
 ---
 
@@ -146,7 +146,8 @@ Mechanism (verified by spike item 7, confirmed by the owner):
 - Seed: the host repo's `.git` directory is mounted read-only into the box as the clone source. Only `.git`, not the working tree, so untracked files such as `.env` stay out of the box. Check that `.git/config` holds no credentials in remote URLs before mounting.
 - Seed details: the mount root shows up as root-owned in the box, so the box's Git config needs `safe.directory` for it. Whatever is mounted is readable by every user in the box, regardless of host file modes.
 - Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream. In the spike: `git -c protocol.ext.allow=always fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The `ext` transport is enabled for that one command only; exec needs `-i`.
-- Sync host to box: the agent runs `git fetch` from the read-only source mount.
+- Sync host to box: the agent runs `git fetch` from the read-only source mount. `up` does this once at every start; the agent's own branches are left alone.
+- As built: the clone is `/workspace/repo` and the agent starts in it. `fetch` needs the box to be running, because the workspace volume cannot be attached anywhere else. `up` refuses a repo whose `.git` is a file (linked worktree, submodule) or whose `.git/config` has an HTTP(S) URL with a user name or token, or an `extraheader`.
 
 ### 2.6 Host firewall (pf)
 
@@ -359,7 +360,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** design verified by the shell spike; build steps 1 to 3 are done, step 3 pending the owner's test. Work happens on the `spike` branch until v0.1.
+**Status:** design verified by the shell spike; build steps 1 to 4 are written and run. Open before v0.1: an automated end-to-end check and the merge to `main`. Work happens on the `spike` branch until v0.1.
 
 **Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 
@@ -379,8 +380,8 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 
 1. **Skeleton that starts a box. Done 2026-11-12.** Checked by hand: `init` builds the image; `up` starts a box as uid 1001 with read-only root, no capabilities and no internet, UI on the box address only, API answering 401; Ctrl-C and `down` stop it; a second `up` keeps the volumes; `reset` removes everything. The secrets trait is not in the tree yet; it arrives with step 3. Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
 2. **Relay. Done 2026-11-12**, except that the web UI has not been tried in a real browser yet (owner to check) and it ran against a local fake gateway, not the real one. Verified end to end with OpenCode in the box: one-time link and cookie, Host and Origin refusals, Basic Auth injection, npm, Git and Node `fetch` through the egress proxy, refusal of other hosts, key swap, streamed answers arriving chunk by chunk, `opencode run` answering through the relay. The parts: egress proxy (CONNECT allowlist, log of refused hosts); LLM relay (key swap, streaming); UI gateway (one-time link, cookie, Host and Origin checks, Basic Auth injection, streaming pass-through). The key comes from an environment variable until step 3. Done when the owner can chat in the browser and tests cover allowlist matching, Host/Origin checks and "key never in logs or errors".
-3. **Secrets phase and pf. Written 2026-11-12, not yet run with a real vault or with root** (the session that wrote it had neither). Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
-4. **Git and release.** `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
+3. **Secrets phase and pf. Done 2026-11-12.** The owner ran `init` and `up` with the real vault, root and the real gateway: both prompts appeared and the browser opened on the OpenCode UI. Whether a chat message was answered is not recorded. Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
+4. **Git and release. `fetch` done 2026-11-12, release steps open.** Verified in a throwaway repo: first `up` clones into the box without untracked files; a commit made in the box arrives under `sandcastle/<branch>`; a hook and `core.fsmonitor` planted in the box do not reach the host repo; the host working tree is untouched; a later `up` keeps the clone and sees new host commits as `origin/*`; a repo with a credential in a remote URL is refused. Still open: `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
 
 **After v0.1:**
 - v0.2: `log`, `doctor`; model list from the gateway's `/v1/models`; image rebuild with digest pinning.
