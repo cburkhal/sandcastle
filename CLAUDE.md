@@ -148,6 +148,7 @@ Mechanism (verified by spike item 7, confirmed by the owner):
 - Seed details: the mount root shows up as root-owned in the box, so the box's Git config needs `safe.directory` for it. Whatever is mounted is readable by every user in the box, regardless of host file modes.
 - Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream. In the spike: `git -c protocol.ext.allow=always fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The `ext` transport is enabled for that one command only; exec needs `-i`.
 - Sync host to box: the agent runs `git fetch` from the read-only source mount. `up` does this once at every start; the agent's own branches are left alone.
+- No host repo (owner decision, 2026-11-13): a box belongs to a folder. If the folder is not inside a Git repo, nothing is mounted from it and `/workspace/repo` starts empty; the agent can `git init` or clone there. `fetch` then needs a host repo to fetch into and says so; after `git init` in the host folder it works. A later `up` mounts the new `.git` and prints a note if the box's repo has no matching `origin`.
 - As built: the clone is `/workspace/repo` and the agent starts in it. `fetch` needs the box to be running, because the workspace volume cannot be attached anywhere else. `up` refuses a repo whose `.git` is a file (linked worktree, submodule) or whose `.git/config` has an HTTP(S) URL with a user name or token, or an `extraheader`.
 
 ### 2.6 Host firewall (pf)
@@ -360,6 +361,7 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | App with Tauri 2, chat stays in the browser (2026-11-13) | The app stays Rust and reuses the library; no web view that shows agent output |
 | App collects the Bitwarden master password in its own field and passes it to `bw unlock --passwordenv` | `bw` can only prompt on a terminal. Cost: the password passes through sandcastle's memory once |
 | App asks for `sudo` with `sudo -A` and an askpass dialog; Touch ID still comes first | Reuses the existing root helper unchanged. A registered privileged helper needs the Developer ID and comes with signing |
+| A box does not need a Git repository (2026-11-13) | The agent can get or create a repo in the chat; requiring one blocked starting a box for a plain folder |
 | Distribution: signed app as a Homebrew cask in a tap, CLI inside the app bundle | One install for both; owner is setting up a Developer ID |
 
 ---

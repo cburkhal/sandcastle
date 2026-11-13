@@ -186,6 +186,8 @@ git merge sandcastle/<branch>         # take the changes
 
 `up` refuses a repo whose `.git/config` contains a token in a remote URL, because the box can read that file.
 
+A box does not need a Git repository. In a folder that is not inside one, `up` starts a box with an empty workspace; nothing from the folder is in it. The agent can create a repository there or clone a public one. To get its commits out, run `git init` in the folder on your Mac, then `sandcastle fetch`.
+
 While a box runs, hosts it tried to reach but was refused are printed once in the `up` terminal. The full relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`.
 
 `up --no-firewall` starts without root and without firewall rules. The box can then reach other services on your Mac; use it for testing only.

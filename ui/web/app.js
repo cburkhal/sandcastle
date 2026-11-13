@@ -102,8 +102,8 @@ $("unlock").addEventListener("submit", (event) => {
 $("lock").addEventListener("click", () => run("Stopping all boxes.", () => invoke("lock")));
 
 $("add").addEventListener("click", async () => {
-  const path = await pickFolder({ directory: true, title: "Choose a Git repository" });
-  if (path) run("Starting the box. The first start clones the repository.", () => invoke("start_box", { path }));
+  const path = await pickFolder({ directory: true, title: "Choose a folder" });
+  if (path) run("Starting the box. The first start of a Git repository clones it.", () => invoke("start_box", { path }));
 });
 
 $("toggle").addEventListener("click", () => {

@@ -47,7 +47,8 @@ pub struct Options {
 /// What is known about a box before anything is created or asked.
 pub struct Plan {
     repo: PathBuf,
-    source: PathBuf,
+    /// The host repo's `.git` directory; `None` for a folder that is not a repo.
+    source: Option<PathBuf>,
     name: String,
     image_tag: String,
     image_digest: String,
@@ -55,8 +56,8 @@ pub struct Plan {
 
 /// Check everything that needs neither a password nor a box.
 pub fn plan(cx: &App, path: &Path) -> Result<Plan> {
-    let repo = state::repo_root(path)?;
-    let source = git::source_dir(&repo)?;
+    let repo = state::box_root(path)?;
+    let source = if state::is_repo(&repo) { Some(git::source_dir(&repo)?) } else { None };
     let name = state::box_name(&repo);
     let image = cx.agent.image();
     let image_digest = cx
@@ -139,13 +140,13 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     // --- 3. The box. From here on, failures must remove it again. ---
     let password = relay::random_token(32)?;
     let spec =
-        box_spec(cx, &session.config, &record, &image_tag, &box_dir.join("config"), &source, gateway, &password);
+        box_spec(cx, &session.config, &record, &image_tag, &box_dir.join("config"), source.as_deref(), gateway, &password);
     cx.runtime.run(&spec)?;
 
     let mut tasks = Vec::new();
     let served = serve(
         cx, session, &record, gateway, &network.subnet, llm.clone(), log.clone(), ui_listener, ui_port, &password,
-        &mut tasks,
+        source.is_some(), &mut tasks,
     )
     .await;
     match served {
@@ -174,6 +175,7 @@ async fn serve(
     ui_listener: TcpListener,
     ui_port: u16,
     password: &str,
+    has_source: bool,
     tasks: &mut Vec<JoinHandle<()>>,
 ) -> Result<Arc<UiGateway>> {
     let name = &record.name;
@@ -194,7 +196,7 @@ async fn serve(
         log.line(&format!("up: firewall rules loaded on {interface}"));
     }
     // The box's clone must exist before the agent starts in it.
-    git::seed(cx, name).map_err(failed)?;
+    git::seed(cx, name, has_source).map_err(failed)?;
 
     let llm_listener = relay::bind_on_gateway(SocketAddr::new(gateway, LLM_PORT), wait).await?;
     let egress_listener = relay::bind_on_gateway(SocketAddr::new(gateway, EGRESS_PORT), wait).await?;
@@ -237,7 +239,12 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
     println!("Box {} is up for {}", running.name, running.repo.display());
     println!("  Open this link to chat (it works once): {login_url}");
     println!("  Allowed hosts: {}", session.config.egress.allow.join(", "));
-    println!("  The agent works on its own clone. `sandcastle fetch` (in another terminal) brings its commits here.");
+    if state::is_repo(&running.repo) {
+        println!("  The agent works on its own clone. `sandcastle fetch` (in another terminal) brings its commits here.");
+    } else {
+        println!("  This folder is not a Git repository: the box starts with an empty workspace, and nothing");
+        println!("  from the folder is in it. To get the agent's commits later, run `git init` here, then `sandcastle fetch`.");
+    }
     println!("Press Ctrl-C to stop the box.");
     if options.open_browser {
         // `open` is the macOS way to hand a URL to the default browser.
@@ -256,7 +263,7 @@ fn box_spec(
     record: &BoxRecord,
     image: &str,
     config_dir: &Path,
-    source: &Path,
+    source: Option<&Path>,
     gateway: IpAddr,
     password: &str,
 ) -> BoxSpec {
@@ -289,9 +296,11 @@ fn box_spec(
         Mount::Volume { name: record.home_volume(), target: agent.home().into() },
         Mount::Volume { name: record.workspace_volume(), target: agent.workspace().into() },
         Mount::Bind { source: config_dir.to_path_buf(), target: agent.config_dir().into(), readonly: true },
-        // Only `.git`, not the working tree: untracked files such as `.env` stay on the host.
-        Mount::Bind { source: source.to_path_buf(), target: git::SOURCE_MOUNT.into(), readonly: true },
     ];
+    if let Some(source) = source {
+        // Only `.git`, not the working tree: untracked files such as `.env` stay on the host.
+        spec.mounts.push(Mount::Bind { source: source.to_path_buf(), target: git::SOURCE_MOUNT.into(), readonly: true });
+    }
     spec
 }
 

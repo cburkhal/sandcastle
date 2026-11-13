@@ -92,21 +92,31 @@ pub fn list(home: &Path) -> Result<Vec<BoxRecord>> {
     Ok(records)
 }
 
-/// Find the root of the Git repo that contains `start`.
-pub fn repo_root(start: &Path) -> Result<PathBuf> {
+/// The folder a box belongs to: the root of the Git repo that contains
+/// `start`, or `start` itself when it is not inside a repo. A box does not
+/// need a host repo; without one it starts with an empty workspace.
+pub fn box_root(start: &Path) -> Result<PathBuf> {
     let start = start
         .canonicalize()
         .with_context(|| format!("no such directory: {}", start.display()))?;
+    if !start.is_dir() {
+        bail!("{} is not a directory", start.display());
+    }
     let mut dir = start.as_path();
     loop {
-        if dir.join(".git").exists() {
+        if is_repo(dir) {
             return Ok(dir.to_path_buf());
         }
         match dir.parent() {
             Some(parent) => dir = parent,
-            None => bail!("{} is not inside a Git repository", start.display()),
+            None => return Ok(start),
         }
     }
+}
+
+/// Whether `root` is the top of a Git checkout.
+pub fn is_repo(root: &Path) -> bool {
+    root.join(".git").exists()
 }
 
 /// Box name for a repo: readable, unique per path, valid as a container,
@@ -173,12 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn repo_root_walks_up_to_the_git_directory() {
+    fn box_root_walks_up_to_the_git_directory_or_stays() {
         let base = std::env::temp_dir().join(format!("sandcastle-root-test-{}", std::process::id()));
         fs::create_dir_all(base.join("repo/.git")).unwrap();
         fs::create_dir_all(base.join("repo/src/deep")).unwrap();
-        let root = repo_root(&base.join("repo/src/deep")).unwrap();
+        let root = box_root(&base.join("repo/src/deep")).unwrap();
         assert_eq!(root, base.join("repo").canonicalize().unwrap());
+        assert!(is_repo(&root));
+        // A folder outside any repo is its own root.
+        fs::create_dir_all(base.join("plain/sub")).unwrap();
+        let plain = box_root(&base.join("plain/sub")).unwrap();
+        assert_eq!(plain, base.join("plain/sub").canonicalize().unwrap());
+        assert!(!is_repo(&plain));
         fs::remove_dir_all(&base).unwrap();
     }
 }

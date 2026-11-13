@@ -41,6 +41,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Repository to add in the app (Cmd-Shift-G in the folder picker lets you paste it):"
+echo "Folder to add in the app (Cmd-Shift-G in the folder picker lets you paste it):"
 echo "  $REPO"
 SANDCASTLE_E2E_KEY="sandbox-key" "$ROOT/target/debug/sandcastle-ui" --no-firewall
