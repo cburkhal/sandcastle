@@ -1,11 +1,13 @@
 //! The host-side relay: the box's only exit and the browser's only entrance.
 //! Security core; it stays one piece and is not a replaceable module.
 //!
+//! - [`control`]: the box's requests to sandcastle itself (publish a branch).
 //! - [`egress`]: CONNECT proxy with a host allowlist.
 //! - [`llm`]: plain HTTP in, real key swapped in, HTTPS out.
 //! - [`ui`]: browser access to the agent's UI behind a one-time link, a
 //!   cookie, and Host and Origin checks.
 
+pub mod control;
 pub mod egress;
 pub mod http;
 pub mod llm;

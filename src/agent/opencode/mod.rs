@@ -13,6 +13,7 @@ const VERSION: &str = "2.2.7";
 const UI_PORT: u16 = 4096;
 const CONFIG_DIR: &str = "/etc/sandcastle";
 const CONFIG_NAME: &str = "opencode.json";
+const INSTRUCTIONS_NAME: &str = "instructions.md";
 
 pub struct OpenCode;
 
@@ -40,12 +41,15 @@ impl Agent for OpenCode {
         CONFIG_DIR
     }
 
-    fn config(&self, llm_base_url: &str, models: &[String]) -> ConfigFile {
+    fn config(&self, llm_base_url: &str, models: &[String], instructions: &str) -> Vec<ConfigFile> {
         let models: Map<String, Value> = models.iter().map(|id| (id.clone(), json!({}))).collect();
         let config = json!({
             "$schema": "https://opencode.ai/config.json",
             // Full autonomy: safety comes from the box, not from permission prompts.
             "permission": { "*": "allow" },
+            // Added to every chat, whatever the repo's own AGENTS.md says.
+            // Checked against 2.2.7 (`opencode debug config` and e2e/run.sh).
+            "instructions": [format!("{CONFIG_DIR}/{INSTRUCTIONS_NAME}")],
             // Only the gateway's models: without this OpenCode also offers its
             // built-in providers, which the box cannot reach anyway.
             "enabled_providers": ["relay"],
@@ -59,10 +63,13 @@ impl Agent for OpenCode {
                 }
             }
         });
-        ConfigFile {
-            name: CONFIG_NAME,
-            content: serde_json::to_string_pretty(&config).expect("JSON values serialize"),
-        }
+        vec![
+            ConfigFile {
+                name: CONFIG_NAME,
+                content: serde_json::to_string_pretty(&config).expect("JSON values serialize"),
+            },
+            ConfigFile { name: INSTRUCTIONS_NAME, content: instructions.to_string() },
+        ]
     }
 
     fn ui_port(&self) -> u16 {
@@ -108,7 +115,7 @@ impl Agent for OpenCode {
         // from sandcastle (an address and a number), never from the repo.
         let script = format!(
             "until (exec 3<>/dev/tcp/{host}/{port}) 2>/dev/null; do sleep 0.2; done; \
-             cd {repo} && exec opencode serve --hostname 0.0.0.0 --port {UI_PORT}",
+             export PATH={CONFIG_DIR}/bin:$PATH; cd {repo} && exec opencode serve --hostname 0.0.0.0 --port {UI_PORT}",
             repo = self.repo_dir()
         );
         Launch {
@@ -168,7 +175,9 @@ mod tests {
 
     #[test]
     fn config_points_at_the_relay_and_holds_no_real_key() {
-        let file = OpenCode.config("http://192.168.128.1:4180/v1", &["a/one".into(), "b/two".into()]);
+        let files = OpenCode.config("http://192.168.128.1:4180/v1", &["a/one".into(), "b/two".into()], "RULES");
+        assert_eq!((files[1].name, files[1].content.as_str()), ("instructions.md", "RULES"));
+        let file = &files[0];
         let json: Value = serde_json::from_str(&file.content).unwrap();
         let provider = &json["provider"]["relay"];
         assert_eq!(provider["options"]["baseURL"], "http://192.168.128.1:4180/v1");

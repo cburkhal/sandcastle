@@ -38,7 +38,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.record()
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        # sandcastle's own instructions must be part of every chat.
+        if b"inside a sandcastle box" in body:
+            with open(SEEN, "a") as seen:
+                seen.write("INSTRUCTIONS present\n")
         if self.path != "/v1/chat/completions":
             self.send(404, "text/plain", b"not found")
             return

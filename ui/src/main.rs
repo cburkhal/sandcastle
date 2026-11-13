@@ -17,7 +17,8 @@ use sandcastle::agent::opencode::OpenCode;
 use sandcastle::core::lifecycle::{self, App};
 use sandcastle::core::session::{self, Session};
 use sandcastle::core::up::{self, RunningBox};
-use sandcastle::core::{config, git, state};
+use sandcastle::core::state::PushMode;
+use sandcastle::core::{config, git, push, state};
 use sandcastle::firewall::{self, Prompt};
 use sandcastle::runtime::apple_container::AppleContainer;
 use sandcastle::runtime::BoxState;
@@ -100,6 +101,10 @@ struct BoxView {
     name: String,
     repo: String,
     running: bool,
+    /// "off", "ask" or "always": what `git push` in the box leads to.
+    push_mode: &'static str,
+    /// Branches the agent asked to publish and the owner has not decided on.
+    requests: Vec<push::Request>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +157,9 @@ async fn status(inner: Shared<'_>) -> Result<Status, String> {
         .into_iter()
         .map(|record| BoxView {
             running: boxes.contains_key(&record.name),
+            push_mode: record.push.name(),
+            // A broken request file must not hide the box.
+            requests: push::pending(&inner.home, &record.name).unwrap_or_default(),
             name: record.name,
             repo: record.repo.display().to_string(),
         })
@@ -261,6 +269,39 @@ async fn fetch(inner: Shared<'_>, name: String) -> Result<Vec<String>, String> {
     git::fetch_refs(&inner.cx(), &repo).map_err(text)
 }
 
+/// Set what `git push` in a box leads to. Applies at once, also while it runs.
+#[tauri::command]
+async fn set_push_mode(inner: Shared<'_>, name: String, mode: String) -> Result<(), String> {
+    let mode = PushMode::parse(&mode).ok_or("unknown push mode")?;
+    push::set_mode(&inner.home, &name, mode).map_err(text)
+}
+
+async fn running_repo(inner: &Inner, name: &str) -> Result<PathBuf, String> {
+    Ok(inner.boxes.lock().await.get(name).ok_or("this box is not running")?.repo.clone())
+}
+
+/// Fetch from the box and describe what publishing `branch` would add.
+#[tauri::command]
+async fn review_push(inner: Shared<'_>, name: String, branch: String) -> Result<push::Summary, String> {
+    let repo = running_repo(&inner, &name).await?;
+    push::review(&inner.cx(), &repo, &branch).map_err(text)
+}
+
+/// Publish `branch` from this Mac as sandcastle/<branch>. Returns what the
+/// remote said, which often has a link to open a pull request.
+#[tauri::command]
+async fn approve_push(inner: Shared<'_>, name: String, branch: String) -> Result<String, String> {
+    let repo = running_repo(&inner, &name).await?;
+    let published = push::approve(&inner.cx(), &repo, &branch).map_err(text)?;
+    Ok(format!("Published {branch} as {} on {}.\n{}", published.branch, published.remote, published.output).trim().to_string())
+}
+
+/// Drop the agent's request without publishing.
+#[tauri::command]
+async fn deny_push(inner: Shared<'_>, name: String, branch: String) -> Result<(), String> {
+    push::dismiss(&inner.home, &name, &branch).map_err(text)
+}
+
 /// Stop every box, drop the secrets and remove the firewall rules.
 #[tauri::command]
 async fn lock(inner: Shared<'_>) -> Result<(), String> {
@@ -320,7 +361,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(inner)
-        .invoke_handler(tauri::generate_handler![status, progress, unlock, start_box, stop_box, delete_box, open_chat, fetch, lock])
+        .invoke_handler(tauri::generate_handler![status, progress, unlock, start_box, stop_box, delete_box, open_chat, set_push_mode, review_push, approve_push, deny_push, fetch, lock])
         .build(tauri::generate_context!())
         .expect("the app could not start")
         .run(move |_, event| {

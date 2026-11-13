@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
@@ -18,8 +18,10 @@ use crate::runtime::BoxState;
 
 /// Where the host's `.git` directory is mounted in the box, read-only.
 pub const SOURCE_MOUNT: &str = "/source.git";
+/// Push URL of `origin` in the box: Git's remote helper `git-remote-sandcastle`.
+const PUSH_URL: &str = "sandcastle::origin";
 /// Remote-tracking namespace for the box's branches in the host repo.
-const REMOTE: &str = "sandcastle";
+pub const REMOTE: &str = "sandcastle";
 
 /// The host repo's `.git` directory, after checking that mounting it into the
 /// box gives nothing away.
@@ -104,10 +106,17 @@ pub fn seed(cx: &App, box_name: &str, has_source: bool) -> Result<()> {
         if !run(&["git", "-C", &repo_dir, "fetch", "--quiet", "origin"])? {
             eprintln!("Note: the box could not fetch new host commits; its clone is unchanged.");
         }
-        return Ok(());
+    } else {
+        println!("First start for this repo: cloning it into the box.");
+        must(&["git", "clone", "--quiet", SOURCE_MOUNT, &repo_dir], "git clone")?;
     }
-    println!("First start for this repo: cloning it into the box.");
-    must(&["git", "clone", "--quiet", SOURCE_MOUNT, &repo_dir], "git clone")
+    // `git push origin <branch>` goes to sandcastle's helper, which asks the
+    // owner's Mac to publish the branch (see `core::push`). Convenience, not
+    // a control: the agent can change its own Git config, and gains nothing.
+    if !run(&["git", "-C", &repo_dir, "config", "remote.origin.pushurl", PUSH_URL])? {
+        eprintln!("Note: could not set up `git push` in the box; `sandcastle fetch` still works.");
+    }
+    Ok(())
 }
 
 /// `sandcastle fetch`: bring the box's commits into the host repo under
@@ -125,6 +134,36 @@ pub fn fetch(cx: &App, path: &Path) -> Result<()> {
     println!("Nothing was checked out or merged. Treat these like a pull request from a stranger:");
     println!("  git log -p HEAD..{REMOTE}/<branch>     review");
     println!("  git merge {REMOTE}/<branch>            take the changes");
+    Ok(())
+}
+
+/// The command line that runs Git's server side in the box, for the `ext`
+/// transport. Plain data, so code without access to the runtime (the relay's
+/// push handler) can fetch too.
+pub fn upload_pack_command(cx: &App, box_name: &str) -> Vec<String> {
+    cx.runtime.exec_argv(box_name, &["git", "upload-pack", &cx.agent.repo_dir()])
+}
+
+/// Fetch every branch of the box into `refs/remotes/sandcastle/*` of `repo`.
+/// Git runs `server` and speaks its protocol over stdin/stdout, so the server
+/// side (`upload-pack`) runs in the box and the host only reads a pack.
+pub fn fetch_with(repo: &Path, server: &[String]) -> Result<()> {
+    if server.iter().any(|word| word.contains(' ') || word.contains('%')) {
+        bail!("cannot build the fetch command: an argument contains a space");
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        // The `ext` transport is off by default; it is enabled for this one command only.
+        .args(["-c", "protocol.ext.allow=always", "fetch", "--prune", "--quiet"])
+        .arg(format!("ext::{}", server.join(" ")))
+        .arg(format!("+refs/heads/*:refs/remotes/{REMOTE}/*"))
+        .stdin(Stdio::null())
+        .output()
+        .context("could not run git")?;
+    if !output.status.success() {
+        bail!("git fetch from the box failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+    }
     Ok(())
 }
 
@@ -150,24 +189,7 @@ pub fn fetch_refs(cx: &App, path: &Path) -> Result<Vec<String>> {
         bail!("the agent has no Git repository in {repo_dir} yet, so there is nothing to fetch");
     }
 
-    // Git runs this command and speaks its protocol over stdin/stdout, so the
-    // server side (`upload-pack`) runs in the box and the host only reads a pack.
-    let server = cx.runtime.exec_argv(&name, &["git", "upload-pack", &cx.agent.repo_dir()]);
-    if server.iter().any(|word| word.contains(' ') || word.contains('%')) {
-        bail!("cannot build the fetch command: an argument contains a space");
-    }
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(&repo)
-        // The `ext` transport is off by default; it is enabled for this one command only.
-        .args(["-c", "protocol.ext.allow=always", "fetch", "--prune"])
-        .arg(format!("ext::{}", server.join(" ")))
-        .arg(format!("+refs/heads/*:refs/remotes/{REMOTE}/*"))
-        .status()
-        .context("could not run git")?;
-    if !status.success() {
-        bail!("git fetch from the box failed");
-    }
+    fetch_with(&repo, &upload_pack_command(cx, &name))?;
 
     let branches = Command::new("git")
         .arg("-C")

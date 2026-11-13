@@ -98,3 +98,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 }
 #confirm-title { font-weight: 600; overflow-wrap: anywhere; }
 button.danger { background: var(--error); border-color: var(--error); color: var(--ground); font-weight: 600; }
+fieldset { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; max-width: 620px; }
+legend { padding: 0 6px; font-weight: 500; }
+fieldset label { display: flex; align-items: center; gap: 10px; min-height: 36px; font-weight: 400; }
+fieldset input { min-height: 0; width: 18px; height: 18px; flex: none; padding: 0; accent-color: var(--accent); }
+#requests { list-style: none; border: 1px solid var(--accent); border-radius: 8px; }
+#requests:empty { display: none; }
+#requests li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 8px 8px 14px; overflow-wrap: anywhere; }
+#requests li + li { border-top: 1px solid var(--line); }
+#requests button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+#review { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

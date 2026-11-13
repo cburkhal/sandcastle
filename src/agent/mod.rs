@@ -39,9 +39,11 @@ pub trait Agent: Send + Sync {
     }
     /// Directory in the box where the configuration is mounted read-only.
     fn config_dir(&self) -> &str;
-    /// Configuration that points the agent at an OpenAI-compatible endpoint
-    /// (the relay) and lists the models it may use.
-    fn config(&self, llm_base_url: &str, models: &[String]) -> ConfigFile;
+    /// Files for [`Agent::config_dir`]: configuration that points the agent
+    /// at an OpenAI-compatible endpoint (the relay), lists the models it may
+    /// use, and makes every chat start with `instructions` (Markdown, about
+    /// the box itself). The agent cannot change them.
+    fn config(&self, llm_base_url: &str, models: &[String], instructions: &str) -> Vec<ConfigFile>;
     /// Port of the agent's web UI and API inside the box.
     fn ui_port(&self) -> u16;
     /// Path that answers 200 without credentials once the agent is up.
@@ -60,5 +62,7 @@ pub trait Agent: Send + Sync {
     /// relay knows it. The agent must not start before `wait_for` (host, port)
     /// accepts connections: the box runs before the relay can listen. By then
     /// the clone in [`Agent::repo_dir`] exists, and the agent starts in it.
+    /// Programs in the `bin` folder of [`Agent::config_dir`] must be on the
+    /// agent's `PATH`: sandcastle puts its Git helper there.
     fn launch(&self, password: &str, wait_for: (&str, u16)) -> Launch;
 }
