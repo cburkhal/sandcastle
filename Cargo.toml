@@ -1,6 +1,6 @@
 [package]
 name = "sandcastle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "One OpenCode instance per Git repo, each in its own Apple container VM"
 license = "MIT"

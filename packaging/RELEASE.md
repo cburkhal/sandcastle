@@ -41,7 +41,7 @@ Check with `gh secret list --repo cburkhal/sandcastle`. Then delete the `.p12` f
 
 ## 4. Release
 
-1. Set the same version in `Cargo.toml`, `ui/Cargo.toml` and `ui/tauri.conf.json`, merge to `main`.
+1. Set the same version in `Cargo.toml`, `ui/Cargo.toml` and `ui/tauri.conf.json`, merge to `main`. To try signing and notarization without a release, run the workflow by hand: `gh workflow run release --ref main`.
 2. Tag and push: `git tag -a v<version> -m "sandcastle v<version>" && git push origin v<version>`.
 3. The workflow run prints the version and the `sha256` of the `.dmg` at the end.
 4. In the tap (https://github.com/cburkhal/homebrew-tap): copy `packaging/homebrew/sandcastle.rb` to `Casks/sandcastle.rb` with that version and checksum, and remove `Formula/sandcastle.rb` (both install a `sandcastle` command).

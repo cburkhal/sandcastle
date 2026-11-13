@@ -1,6 +1,7 @@
 # Builds, signs and notarizes sandcastle.app for a version tag and attaches
-# the .dmg to the GitHub release. Not run yet: it needs the secrets below,
-# which exist once the Apple Developer ID is set up.
+# the .dmg to the GitHub release. A manual run (Actions > release > Run
+# workflow, or `gh workflow run release`) does the same without a release:
+# it only proves that signing and notarization work.
 #
 # Repository secrets (Settings > Secrets and variables > Actions):
 #   APPLE_CERTIFICATE            the "Developer ID Application" certificate as base64 of the .p12
@@ -14,6 +15,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,7 +40,15 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: packaging/bundle.sh
+      - name: Check that Gatekeeper accepts the app
+        run: |
+          app=target/release/bundle/macos/sandcastle.app
+          xcrun stapler validate "$app"
+          verdict="$(spctl -a -vv "$app" 2>&1 || true)"
+          echo "$verdict"
+          grep -q "source=Notarized Developer ID" <<<"$verdict"
       - name: Attach the .dmg to the release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
