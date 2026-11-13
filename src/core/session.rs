@@ -13,6 +13,7 @@ use anyhow::{anyhow, bail, Result};
 use super::config::{self, Config};
 use super::lifecycle::App;
 use crate::firewall::{self, Firewall, Prompt};
+use crate::runtime::BoxState;
 use crate::secrets::{Resolver, Secret, SecretStore};
 
 pub struct Session {
@@ -45,7 +46,15 @@ impl Session {
                 if !firewall::anchor_configured()? {
                     bail!("{} lacks sandcastle's anchor line; run `sandcastle init`", firewall::PF_CONF);
                 }
-                Some(Mutex::new(Firewall::start(prompt)?))
+                let mut firewall = Firewall::start(prompt)?;
+                // Boxes an earlier, crashed run left blocked: once a box is
+                // gone its rules can go. A box that still runs stays blocked.
+                for name in firewall.blocked()? {
+                    if cx.runtime.inspect(&name)?.state != BoxState::Running {
+                        firewall.unload(&name)?;
+                    }
+                }
+                Some(Mutex::new(firewall))
             }
             None => None,
         };
@@ -61,14 +70,15 @@ impl Session {
     }
 
     /// Confine a box. Until this returns, the box must not do anything.
-    pub fn firewall_load(&self, box_name: &str, rules: &[String]) -> Result<()> {
+    pub fn firewall_load(&self, box_name: &str, interface: &str, rules: &[String]) -> Result<()> {
         match &self.firewall {
-            Some(firewall) => lock(firewall)?.load(box_name, rules),
+            Some(firewall) => lock(firewall)?.load(box_name, interface, rules),
             None => Ok(()),
         }
     }
 
-    /// Remove the rules of a box. Call only after the box is gone.
+    /// Remove the rules of a box. Call only after the box is gone: a box
+    /// that keeps its rules is blocked completely when the session ends.
     pub fn firewall_unload(&self, box_name: &str) -> Result<()> {
         match &self.firewall {
             Some(firewall) => lock(firewall)?.unload(box_name),

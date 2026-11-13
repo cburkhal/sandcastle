@@ -97,9 +97,10 @@ impl RunningBox {
         for task in &self.tasks {
             task.abort();
         }
-        let stopped = lifecycle::stop(cx, &self.name);
-        // The rules go only after the box is gone.
-        stopped.and(session.firewall_unload(&self.name))
+        // The rules go only once the box is gone. If it could not be
+        // stopped, they stay and the helper blocks the box when it ends.
+        lifecycle::stop(cx, &self.name)?;
+        session.firewall_unload(&self.name)
     }
 }
 
@@ -153,8 +154,9 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
             for task in &tasks {
                 task.abort();
             }
-            let _ = lifecycle::stop(cx, &name);
-            let _ = session.firewall_unload(&name);
+            if lifecycle::stop(cx, &name).is_ok() {
+                let _ = session.firewall_unload(&name);
+            }
             Err(error)
         }
     }
@@ -187,8 +189,8 @@ async fn serve(
     let agent_port = cx.agent.ui_port();
     if session.has_firewall() {
         let interface = host_interface(gateway, wait).await?;
-        session
-            .firewall_load(name, &firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port))?;
+        let rules = firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port);
+        session.firewall_load(name, &interface, &rules)?;
         log.line(&format!("up: firewall rules loaded on {interface}"));
     }
     // The box's clone must exist before the agent starts in it.
