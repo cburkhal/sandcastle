@@ -72,6 +72,11 @@ echo "tracked" >"$REPO/tracked.txt"
 echo "SECRET=never-in-the-box" >"$REPO/.env"
 git -C "$REPO" add tracked.txt
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@example.invalid commit --quiet -m "first"
+# The owner's remote, for the push checks.
+REMOTE_REPO="$WORK/remote.git"
+git init --quiet --bare "$REMOTE_REPO"
+git -C "$REPO" remote add origin "$REMOTE_REPO"
+git -C "$REPO" push --quiet origin main
 
 python3 "$ROOT/e2e/fake_gateway.py" "$GATEWAY_PORT" "$ANSWER" "$SEEN" >"$WORK/gateway.log" 2>&1 &
 GATEWAY_PID=$!
@@ -158,6 +163,7 @@ expect_text "gateway model is offered" "relay/e2e-model" "$MODELS"
 expect_text "only gateway models are offered" 0 "$(printf '%s\n' "$MODELS" | grep -c -v '^relay/')"
 REPLY="$(box bash -c 'cd /workspace/repo && timeout 120 opencode run -m relay/e2e-model "Say the word."' 2>&1)"
 expect_text "opencode answers through the relay" "$ANSWER" "$REPLY"
+expect_ok "sandcastle's instructions are part of the chat" grep -q "INSTRUCTIONS present" "$SEEN"
 expect_ok "gateway saw the real key" grep -q "POST /v1/chat/completions Bearer $KEY" "$SEEN"
 expect_fail "gateway never saw the placeholder key" grep -q "sandcastle-placeholder" "$SEEN"
 expect_no_text "real key is not in the relay log" "$KEY" "$(cat "$HOME/Library/Application Support/sandcastle/boxes/$BOX/relay.log")"
@@ -176,6 +182,51 @@ expect_text "host HEAD is unchanged" "$HEAD_BEFORE" "$(git -C "$REPO" rev-parse 
 expect_fail "host working tree is untouched" test -e "$REPO/agent.txt"
 expect_fail "the box's hook did not reach the host repo" test -e "$REPO/.git/hooks/post-checkout"
 expect_fail "the box's core.fsmonitor did not reach the host repo" git -C "$REPO" config --get core.fsmonitor
+
+step "Push"
+sc() { (cd "$REPO" && "$BIN" "$@"); }
+remote_refs() { git -C "$REMOTE_REPO" for-each-ref --format='%(refname)'; }
+box_push() { box bash -c "cd /workspace/repo && PATH=/etc/sandcastle/bin:\$PATH git push origin $1" 2>&1; }
+MAIN_BEFORE="$(git -C "$REMOTE_REPO" rev-parse refs/heads/main)"
+expect_ok "the agent's processes find the Git helper" box bash -c 'cat /proc/[0-9]*/environ 2>/dev/null | tr "\0" "\n" | grep -q "^PATH=/etc/sandcastle/bin:"'
+expect_text "the default mode is ask" "ask" "$(sc push-mode)"
+OUT="$(box_push agent-work)"
+expect_text "ask: the agent is told that the owner decides" "waits for their approval" "$OUT"
+expect_text "ask: git reports the push as not done" "rejected" "$OUT"
+expect_no_text "ask: nothing is on the remote yet" "sandcastle/agent-work" "$(remote_refs)"
+expect_text "ask: the request is listed" "agent-work" "$(sc push)"
+expect_text "review shows the commit" "agent commit" "$(sc push agent-work --review)"
+expect_no_text "review publishes nothing" "sandcastle/agent-work" "$(remote_refs)"
+expect_ok "the owner publishes the branch" sc push agent-work
+expect_text "the branch is on the remote under the prefix" "refs/heads/sandcastle/agent-work" "$(remote_refs)"
+expect_no_text "no other branch was created" "refs/heads/agent-work" "$(remote_refs)"
+expect_text "the remote's main is unchanged" "$MAIN_BEFORE" "$(git -C "$REMOTE_REPO" rev-parse refs/heads/main)"
+expect_text "the request is gone" "has not asked" "$(sc push)"
+
+expect_text "the agent cannot push to another branch name" "rejected" "$(box bash -c 'cd /workspace/repo && PATH=/etc/sandcastle/bin:$PATH git push origin agent-work:main' 2>&1)"
+expect_text "the remote's main is still unchanged" "$MAIN_BEFORE" "$(git -C "$REMOTE_REPO" rev-parse refs/heads/main)"
+sc push agent-work --deny >/dev/null 2>&1
+expect_text "the agent cannot delete a branch" "failed to push" "$(box bash -c 'cd /workspace/repo && PATH=/etc/sandcastle/bin:$PATH git push origin :main' 2>&1)"
+expect_text "the remote's main still exists" "$MAIN_BEFORE" "$(git -C "$REMOTE_REPO" rev-parse refs/heads/main)"
+expect_text "a request from outside the helper with a bad name is refused" 403 "$(box bash -c 'exec 3<>/dev/tcp/'"$GATEWAY_IP"'/4182; printf "POST /push HTTP/1.1\r\nHost: x\r\nContent-Length: 9\r\nConnection: close\r\n\r\n--force x" >&3; head -1 <&3' 2>&1)"
+
+sc push-mode off >/dev/null
+box bash -c 'cd /workspace/repo && echo more >more.txt && git add more.txt && git commit --quiet -m "second agent commit"' 2>/dev/null
+OUT="$(box_push agent-work)"
+expect_text "off: the push is refused" "Publishing is off" "$OUT"
+expect_text "off: nothing is queued" "has not asked" "$(sc push)"
+
+sc push-mode always >/dev/null
+OUT="$(box_push agent-work)"
+expect_text "always: the push is published at once" "Published as sandcastle/agent-work" "$OUT"
+expect_text "always: the new commit is on the remote" "second agent commit" "$(git -C "$REMOTE_REPO" log -1 --format=%s refs/heads/sandcastle/agent-work 2>&1)"
+box bash -c 'cd /workspace/repo && mkdir -p .github/workflows && echo "on: push" >.github/workflows/x.yml && git add .github && git commit --quiet -m "change ci"' 2>/dev/null
+OUT="$(box_push agent-work)"
+expect_text "always: a change to CI configuration waits for the owner" "waits for their approval" "$OUT"
+expect_text "always: the reason is shown to the owner" "CI configuration" "$(sc push)"
+expect_text "always: the CI change is not on the remote" "second agent commit" "$(git -C "$REMOTE_REPO" log -1 --format=%s refs/heads/sandcastle/agent-work 2>&1)"
+expect_text "the host working tree is still untouched" "$HEAD_BEFORE" "$(git -C "$REPO" rev-parse HEAD)"
+expect_fail "no file of the agent is in the host working tree" test -e "$REPO/more.txt"
 
 step "Stop and reset"
 kill -INT "$UP_PID"; wait "$UP_PID" 2>/dev/null; UP_PID=""

@@ -10,6 +10,8 @@ let selected = null;
 let busy = null;
 // The box whose deletion waits for a confirmation, or null.
 let confirming = null;
+// What the last review of a push request showed: { box, branch, text } or null.
+let reviewed = null;
 // The last error of a background refresh, so it is not shown again and again.
 let refreshError = null;
 
@@ -99,6 +101,7 @@ function boxRow(box) {
   state.textContent = mine && busy.kind === "start" ? "Starting…"
     : mine && busy.kind === "stop" ? "Stopping…"
     : box.running ? "Running" : "Stopped";
+  if (box.requests.length > 0) state.textContent += ` · ${box.requests.length} to publish`;
   label.append(name, state);
   select.append(dot, label);
   select.addEventListener("click", () => {
@@ -170,6 +173,7 @@ function render() {
     $("box-state").textContent = mine && busy.kind === "start" ? "Starting…"
       : mine && busy.kind === "stop" ? "Stopping…"
       : box.running ? "Running" : "Stopped. Start it in the list on the left to chat or fetch.";
+    renderPublishing(box, working);
     if (confirming !== box.name) confirming = null;
     $("delete").hidden = confirming !== null;
     $("delete").disabled = working;
@@ -181,6 +185,76 @@ function render() {
     $("chat").disabled = working || !box.running;
     $("fetch").disabled = working || !box.running;
   }
+}
+
+function renderPublishing(box, working) {
+  for (const radio of document.querySelectorAll('input[name="push-mode"]')) {
+    radio.checked = radio.value === box.push_mode;
+    radio.disabled = working;
+  }
+  $("push-warning").hidden = box.push_mode !== "always";
+
+  $("requests").replaceChildren(...box.requests.map((request) => {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "mono";
+    label.textContent = request.branch + (request.reason ? `  (${request.reason})` : "");
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    const button = (text, className, onClick) => {
+      const b = document.createElement("button");
+      b.textContent = text;
+      b.className = className;
+      // Reading the box's branches needs the running box.
+      b.disabled = working || (!box.running && text !== "Drop");
+      b.addEventListener("click", onClick);
+      return b;
+    };
+    actions.append(
+      button("Review", "", () => run(
+        { busy: `Fetching ${request.branch} from the box.`, failed: `Could not review ${request.branch}`, kind: "review" },
+        async () => {
+          const summary = await invoke("review_push", { name: box.name, branch: request.branch });
+          const lines = summary.commits.length
+            ? [`${summary.commits.length} new commit(s) on ${summary.branch}:`, ...summary.commits.map((c) => `  ${c}`), "", summary.stat]
+            : [`Nothing new on ${summary.branch}: every commit is already in your repository or on its remote.`];
+          if (summary.touches_ci) lines.push("", "WARNING: these commits change CI configuration. CI may run them with its secrets once published.");
+          lines.push("", `Read the changes in a terminal: git log -p sandcastle/${summary.branch} --not --branches --remotes`);
+          reviewed = { box: box.name, branch: request.branch, text: lines.join("\n") };
+        },
+      )),
+      button("Publish", "primary", () => run(
+        { busy: `Publishing ${request.branch} from this Mac.`, failed: `Could not publish ${request.branch}`, kind: "publish" },
+        async () => {
+          addNotices([await invoke("approve_push", { name: box.name, branch: request.branch })]);
+          reviewed = null;
+        },
+      )),
+      button("Drop", "", () => run(
+        { busy: "Dropping the request.", failed: `Could not drop the request for ${request.branch}`, kind: "deny" },
+        async () => {
+          await invoke("deny_push", { name: box.name, branch: request.branch });
+          reviewed = null;
+        },
+      )),
+    );
+    item.append(label, actions);
+    return item;
+  }));
+
+  const showReview = reviewed !== null && reviewed.box === box.name
+    && box.requests.some((request) => request.branch === reviewed.branch);
+  $("review").hidden = !showReview;
+  $("review").textContent = showReview ? reviewed.text : "";
+}
+
+for (const radio of document.querySelectorAll('input[name="push-mode"]')) {
+  radio.addEventListener("change", () => {
+    const box = current.boxes.find((b) => b.name === selected);
+    if (!box || !radio.checked) return;
+    run({ busy: "Saving.", failed: "Could not change the setting", kind: "mode" },
+      () => invoke("set_push_mode", { name: box.name, mode: radio.value }));
+  });
 }
 
 function startBox(path, name) {

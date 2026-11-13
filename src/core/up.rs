@@ -12,20 +12,24 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
+use hyper::StatusCode;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 use super::config::Config;
 use super::git;
 use super::lifecycle::{self, App};
+use super::push::{self, Answer};
 use super::session::Session;
 use super::state::{self, BoxRecord};
 use crate::firewall::{self, Prompt};
+use crate::relay::control::Control;
 use crate::relay::egress::Egress;
 use crate::relay::llm::LlmRelay;
 use crate::relay::log::Log;
@@ -37,6 +41,8 @@ use crate::secrets::SecretStore;
 /// Ports of the relay on the box network's gateway address.
 const LLM_PORT: u16 = 4180;
 const EGRESS_PORT: u16 = 4181;
+/// Requests to sandcastle itself: "publish this branch" (`relay::control`).
+const CONTROL_PORT: u16 = 4182;
 
 pub struct Options {
     pub open_browser: bool,
@@ -125,7 +131,10 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
 
     // The chat's port: the one from the last start if it is still free, so
     // the browser sees the same site again. Fixed before the box starts.
-    let last_port = state::load(cx.home, &name)?.and_then(|record| record.ui_port);
+    let last = state::load(cx.home, &name)?;
+    // The owner's setting for this box survives restarts.
+    let push_mode = last.as_ref().map(|record| record.push).unwrap_or_default();
+    let last_port = last.and_then(|record| record.ui_port);
     let ui_listener = match last_port {
         Some(port) => TcpListener::bind(("127.0.0.1", port)).await.ok(),
         None => None,
@@ -137,7 +146,7 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     let ui_port = ui_listener.local_addr()?.port();
 
     // --- 2. Network and volumes. ---
-    let record = BoxRecord { name: name.clone(), repo, image_digest, ui_port: Some(ui_port) };
+    let record = BoxRecord { name: name.clone(), repo, image_digest, ui_port: Some(ui_port), push: push_mode };
     state::save(cx.home, &record)?;
     // A stopped leftover from a crashed run would block the name.
     cx.runtime.remove(&name)?;
@@ -149,8 +158,16 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     let gateway: IpAddr = network.gateway.parse().context("the runtime reported an invalid gateway address")?;
     lifecycle::prepare_volumes(cx, &record, &image_tag)?;
 
-    let agent_config = cx.agent.config(&format!("http://{gateway}:{LLM_PORT}/v1"), &models);
-    fs::write(box_dir.join("config").join(agent_config.name), agent_config.content)?;
+    // The read-only config mount: the agent's configuration with the
+    // instructions every chat starts with, and the Git helper for `git push`.
+    let instructions = push::instructions(source.is_some(), &session.config.egress.allow);
+    for file in cx.agent.config(&format!("http://{gateway}:{LLM_PORT}/v1"), &models, &instructions) {
+        fs::write(box_dir.join("config").join(file.name), file.content)?;
+    }
+    let helper = box_dir.join("config/bin").join(push::HELPER_NAME);
+    fs::create_dir_all(helper.parent().expect("the helper has a folder"))?;
+    fs::write(&helper, push::helper_script(&gateway.to_string(), CONTROL_PORT))?;
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755))?;
 
     // --- 3. The box. From here on, failures must remove it again. ---
     let password = relay::random_token(32)?;
@@ -208,7 +225,7 @@ async fn serve(
     let agent_port = cx.agent.ui_port();
     if session.has_firewall() {
         let interface = host_interface(gateway, wait).await?;
-        let rules = firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port);
+        let rules = firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT, CONTROL_PORT], agent_port);
         session.firewall_load(name, &interface, &rules)?;
         log.line(&format!("up: firewall rules loaded on {interface}"));
     }
@@ -217,12 +234,28 @@ async fn serve(
 
     let llm_listener = relay::bind_on_gateway(SocketAddr::new(gateway, LLM_PORT), wait).await?;
     let egress_listener = relay::bind_on_gateway(SocketAddr::new(gateway, EGRESS_PORT), wait).await?;
+    let control_listener = relay::bind_on_gateway(SocketAddr::new(gateway, CONTROL_PORT), wait).await?;
     // Only the box may use them; the host sees the box's own address (spike item 1).
     let egress = Arc::new(Egress::new(&session.config.egress.allow, Some(box_ip), log.clone()));
     tasks.push(tokio::spawn(egress.serve(egress_listener)));
     let handler = llm.clone();
     tasks.push(tokio::spawn(http::serve(llm_listener, Some(box_ip), log.clone(), move |request| {
         handler.clone().handle(request)
+    })));
+
+    // `git push` in the box arrives here; the gate decides by the box's mode.
+    let gate = push::Gate::new(cx, name, &record.repo, log.clone());
+    let control = Arc::new(Control::new(
+        move |branch| match gate.request(branch) {
+            Answer::Published(message) => (StatusCode::OK, message),
+            Answer::Queued(message) => (StatusCode::ACCEPTED, message),
+            Answer::Refused(message) => (StatusCode::FORBIDDEN, message),
+            Answer::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+        },
+        log.clone(),
+    ));
+    tasks.push(tokio::spawn(http::serve(control_listener, Some(box_ip), log.clone(), move |request| {
+        control.clone().handle(request)
     })));
 
     // --- 5. The agent starts once the relay answers; then the UI gateway. ---

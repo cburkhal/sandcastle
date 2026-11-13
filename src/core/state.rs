@@ -21,6 +21,43 @@ pub struct BoxRecord {
     /// sees the same site again and the web UI keeps what it remembers.
     #[serde(default)]
     pub ui_port: Option<u16>,
+    /// What happens when the agent asks to publish a branch (`git push`).
+    /// Lives here, on the host: a repo must not widen its own access.
+    #[serde(default)]
+    pub push: PushMode,
+}
+
+/// What `git push` in the box leads to. The box never pushes itself: the Mac
+/// fetches the branch and pushes it with the owner's own Git credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushMode {
+    /// Refused. The owner takes commits with `sandcastle fetch`.
+    Off,
+    /// Queued until the owner approves or denies it.
+    #[default]
+    Ask,
+    /// Published at once, except changes to CI configuration, which are queued.
+    Always,
+}
+
+impl PushMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "off" => Some(PushMode::Off),
+            "ask" => Some(PushMode::Ask),
+            "always" => Some(PushMode::Always),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PushMode::Off => "off",
+            PushMode::Ask => "ask",
+            PushMode::Always => "always",
+        }
+    }
 }
 
 impl BoxRecord {
@@ -174,7 +211,13 @@ mod tests {
     #[test]
     fn records_round_trip_and_list_sorted() {
         let home = std::env::temp_dir().join(format!("sandcastle-state-test-{}", std::process::id()));
-        let record = |name: &str| BoxRecord { name: name.into(), repo: "/r".into(), image_digest: "sha256:x".into(), ui_port: None };
+        let record = |name: &str| BoxRecord {
+            name: name.into(),
+            repo: "/r".into(),
+            image_digest: "sha256:x".into(),
+            ui_port: None,
+            push: PushMode::Ask,
+        };
         save(&home, &record("sc-b")).unwrap();
         save(&home, &record("sc-a")).unwrap();
         assert_eq!(load(&home, "sc-a").unwrap(), Some(record("sc-a")));

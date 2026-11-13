@@ -186,6 +186,32 @@ git merge sandcastle/<branch>         # take the changes
 
 `up` refuses a repo whose `.git/config` contains a token in a remote URL, because the box can read that file.
 
+### Letting the agent push
+
+The agent can also run `git push origin <branch>` in the box. The box has no credentials and pushes nothing itself: the request goes to your Mac, which fetches the branch and pushes it with your own Git setup, always as `sandcastle/<branch>` on your remote. The agent cannot touch `main` or any other branch, cannot force and cannot delete.
+
+What a push leads to is set per box, on your Mac:
+
+```
+sandcastle push-mode            # show it
+sandcastle push-mode ask        # default: every push waits for you
+sandcastle push-mode always     # published at once, without review
+sandcastle push-mode off        # refused; you use `sandcastle fetch`
+```
+
+With `ask`, look at what waits and decide:
+
+```
+sandcastle push                       # what the agent asked to publish
+sandcastle push <branch> --review     # commits and a diffstat, nothing is published
+sandcastle push <branch>              # publish it
+sandcastle push <branch> --deny       # drop the request
+```
+
+The app has the same in a box's detail pane. `sandcastle push <branch>` also works without a request from the agent.
+
+Be careful with `always`: once a branch is on your remote, CI that runs on pushes runs the agent's code with the secrets its workflows have. Pushes that change CI configuration (`.github`, `.gitlab-ci.yml` and similar) still wait for you, but sandcastle cannot tell what your existing workflows execute. No pull request is opened for you; the output of a push usually has the link.
+
 A box does not need a Git repository. In a folder that is not inside one, `up` starts a box with an empty workspace; nothing from the folder is in it. The agent can create a repository there or clone a public one. To get its commits out, run `git init` in the folder on your Mac, then `sandcastle fetch`.
 
 While a box runs, hosts it tried to reach but was refused are printed once in the `up` terminal. The full relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`.

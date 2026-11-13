@@ -6,7 +6,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-13: **v0.2.0** (the first signed release, with the app). Design verified by a shell spike (`spike/NOTES.md`); all four build steps are written and run (box, relay, Bitwarden, pf, `fetch`); `e2e/run.sh` checks the real binary end to end. See "Current status and next steps".
+- Status as of 2026-11-13: **v0.2.1** released (signed app); v0.3 in progress on branch `push`: `git push` in the box, done by the Mac (2.5). Design verified by a shell spike (`spike/NOTES.md`); all four build steps are written and run (box, relay, Bitwarden, pf, `fetch`); `e2e/run.sh` checks the real binary end to end. See "Current status and next steps".
 
 ---
 
@@ -103,7 +103,7 @@ Listens on `127.0.0.1` for the browser and on the host side of each box's intern
 
 The relay checks the peer address of box-side connections: the host sees the box's own address, not a NAT address. Connections from any other address are dropped.
 
-As built: the LLM relay listens on `<gateway>:4180` and forwards only paths under `/v1/`; the egress proxy listens on `<gateway>:4181`, accepts only `CONNECT <host>:443` for exact allowlisted names, and refuses names that resolve to private or local addresses. The UI gateway listens on a free port on `127.0.0.1`. `up` asks the gateway for its models (`/v1/models`) before it creates anything, which also proves the key works, and writes them into the agent's config. The config sets `enabled_providers` to the relay's provider only, so OpenCode's built-in models (the free `opencode/*` ones, which the box cannot reach) are not offered. A further model source would be added to that list. The gateway URL must be `https://`; plain `http://` is accepted only for `127.0.0.1`. The relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`; refused hosts are also printed once on the terminal.
+As built: a third box-side listener, the control port `<gateway>:4182`, takes the box's push requests (2.5). The LLM relay listens on `<gateway>:4180` and forwards only paths under `/v1/`; the egress proxy listens on `<gateway>:4181`, accepts only `CONNECT <host>:443` for exact allowlisted names, and refuses names that resolve to private or local addresses. The UI gateway listens on a free port on `127.0.0.1`. `up` asks the gateway for its models (`/v1/models`) before it creates anything, which also proves the key works, and writes them into the agent's config. The config sets `enabled_providers` to the relay's provider only, so OpenCode's built-in models (the free `opencode/*` ones, which the box cannot reach) are not offered. A further model source would be added to that list. The gateway URL must be `https://`; plain `http://` is accepted only for `127.0.0.1`. The relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`; refused hosts are also printed once on the terminal.
 
 Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server. In 2.2.7 the API answers 401 without credentials and 2.2.6 added origin checks, but the relay does not rely on either. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Confirmed by the owner (question 6).
 
@@ -150,6 +150,20 @@ Mechanism (verified by spike item 7, confirmed by the owner):
 - Sync host to box: the agent runs `git fetch` from the read-only source mount. `up` does this once at every start; the agent's own branches are left alone.
 - No host repo (owner decision, 2026-11-13): a box belongs to a folder. If the folder is not inside a Git repo, nothing is mounted from it and `/workspace/repo` starts empty; the agent can `git init` or clone there. `fetch` then needs a host repo to fetch into and says so; after `git init` in the host folder it works. A later `up` mounts the new `.git` and prints a note if the box's repo has no matching `origin`.
 - As built: the clone is `/workspace/repo` and the agent starts in it. `fetch` needs the box to be running, because the workspace volume cannot be attached anywhere else. `up` refuses a repo whose `.git` is a file (linked worktree, submodule) or whose `.git/config` has an HTTP(S) URL with a user name or token, or an `extraheader`.
+
+#### Push: the Mac publishes for the box (v0.3, owner decisions 2026-11-13)
+
+Fetch stays the default way out. On top of it the agent can ask for a branch to be published; the box still has no credentials and never talks to the owner's remote.
+
+- `git push origin <branch>` in the box reaches a Git remote helper (`git-remote-sandcastle`, a bash script in the read-only config mount, `bin/` on the agent's `PATH`). It sends the branch name to the relay's control port (`<gateway>:4182`, `POST /push`). Only that name crosses; it is checked against a strict pattern.
+- The host then decides by the box's push mode, stored in the box record on the Mac (never in the repo): `off` (refused), `ask` (default: queued until the owner approves) or `always` (published at once).
+- Publishing means: the Mac fetches from the box (as `sandcastle fetch`) and runs `git push <remote> refs/remotes/sandcastle/<branch>:refs/heads/sandcastle/<branch>` in the host repo with the owner's own Git setup. Always under the `sandcastle/` prefix, never forced, never a deletion. The remote is `origin`, or the only remote.
+- The agent's `git push` returns at once. Git reports success only when the branch was published; "waiting for approval" and "off" show as a rejected push with a sentence that says what to do.
+- Requests wait in `boxes/<box>/push-requests.json`, so `sandcastle push` in another terminal and the app both see them. `sandcastle push` lists them, `sandcastle push <branch> --review` fetches and shows commits and a diffstat, `sandcastle push <branch>` publishes (also without a request), `--deny` drops. `sandcastle push-mode [off|ask|always]` shows or sets the mode; it applies to a running box at once.
+- **Known and accepted risk:** once a branch is on the remote, CI that runs on pushes runs the agent's code with the secrets those workflows have. `always` therefore queues any push whose new commits touch CI configuration (`CI_PATHS` in `src/core/push.rs`), and the mode carries a warning. It cannot tell what an existing workflow executes. A token in the relay with a method-aware Git path was considered and dropped: pushing from the Mac needs no new secret, works with any remote and adds no Git protocol code to the relay. Its cost: the push uses the owner's full Git identity, so the limit is sandcastle's code, not a narrow token.
+- No pull request is opened. The remote's answer (often a link to open one) is shown to the owner.
+
+**Instructions for the agent:** every chat starts with a text generated by sandcastle (`push::instructions`): what the box is, that there are no credentials, the allowed hosts, how `origin`, commits and `git push` work. It lives in the read-only config mount and is loaded through OpenCode's `instructions` setting, so it does not depend on the repo's `AGENTS.md` and the agent cannot change it. It does not depend on the push mode: the answer to `git push` says what happened. Checked by `e2e/run.sh` (the fake gateway sees the text).
 
 ### 2.6 Host firewall (pf)
 
@@ -214,6 +228,8 @@ sandcastle/
   e2e/                              end-to-end check of the real binary, with a fake gateway
   src/lib.rs                        the library; src/main.rs is the CLI on top of it
   src/core/session.rs               a session: secrets and the root helper, obtained once
+  src/core/push.rs                  push modes, the request queue, publishing from the Mac, the agent's instructions
+  src/relay/control.rs              the box's requests to sandcastle itself (publish a branch)
   ui/                               the app (Tauri 2): Rust commands in src/, the window in web/
   packaging/                        bundle script, Homebrew cask template
   .github/workflows/release.yml     signed release build (not run yet)
@@ -261,6 +277,8 @@ In v1, `up` runs in the foreground: the relay lives as long as that terminal; Ct
 | `sandcastle down [path]` | Stops box and relay, removes the pf rules; keeps the home and workspace volumes |
 | `sandcastle ls` | Lists boxes: repo, port, status, image digest |
 | `sandcastle fetch [path]` | Fetches the box's commits into the host repo under `refs/remotes/sandcastle/*`; the user merges and pushes with plain Git |
+| `sandcastle push [branch] [--review\|--deny] [--path p]` | Lists the agent's push requests, or fetches a branch and pushes it from the Mac as `sandcastle/<branch>` |
+| `sandcastle push-mode [off\|ask\|always] [--path p]` | Shows or sets what `git push` in the box leads to (default `ask`) |
 | `sandcastle reset [path]` | Deletes box, network, home volume and workspace volume (warns about unfetched commits); host repo untouched |
 | `sandcastle log [path]` | Relay log: allowed/blocked hosts, LLM request count |
 
@@ -287,6 +305,7 @@ Steps 4 and 5 are in this order because the gateway address cannot be bound befo
 | No DNS in the box | DNS tunnelling | None known |
 | LLM key only in relay | Stealing the LiteLLM key | Spending budget while box runs (budget caps it) |
 | No Git credentials in box | Pushing to or deleting the user's remote repos | Exfiltrating repo content to GitHub or npm with an attacker-supplied token (accepted, see section 3) |
+| Push only through the Mac: one branch name crosses, always published under `sandcastle/`, never forced, mode set on the host | The agent changing `main` or other branches, or publishing without the owner's setting allowing it | Published code runs in CI with its secrets (mode `always`, or an approval without review) |
 | Clone-and-fetch: host repo never writable from the box | Agent-written hooks and `.git/config` keys running on macOS | Fetched content once checked out (editor tasks, Makefiles, build scripts) |
 | Read-only config mount | Agent rewriting its own config, prompts, MCP servers | None |
 | Read-only root, `cap-drop ALL`, non-root | Persisting outside the volumes | Persistence in home and workspace volumes until `reset` |
@@ -363,6 +382,10 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | App asks for `sudo` with `sudo -A` and an askpass dialog; Touch ID still comes first | Reuses the existing root helper unchanged. A registered privileged helper needs the Developer ID and comes with signing |
 | A box does not need a Git repository (2026-11-13) | The agent can get or create a repo in the chat; requiring one blocked starting a box for a plain folder |
 | Distribution: signed app as a Homebrew cask in a tap, CLI inside the app bundle | One install for both; owner is setting up a Developer ID |
+| The admin prompt per session stays, as a fingerprint (2026-11-13) | A registered privileged helper (`SMAppService`) is the app-like answer but days of work; a passwordless sudo rule was declined again |
+| A box keeps its folder (2026-11-13) | It is the source (read-only `.git`), the destination of fetch and push, and the box's name; a box without one could hand nothing over |
+| Push is done by the Mac with the owner's Git setup, not by a token in the relay (2026-11-13) | No new secret, any remote, no Git protocol in the relay |
+| Push modes per box: `off`, `ask` (default), `always`; published as `sandcastle/<branch>`; the agent's push returns at once (2026-11-13) | Owner decisions |
 
 ---
 
@@ -372,7 +395,7 @@ Answered on 2026-11-12 (see decisions log): 1 (no Keychain in v1), 3 (default al
 
 Still open:
 
-2. Manual push acceptable, or should the agent open PRs itself? (Needs a fine-grained GitHub token, relay-injected, and `github.com` reachable through a method-aware relay path, not a CONNECT tunnel.)
+2. Should the agent open PRs itself? Publishing branches is answered (push through the Mac, 2.5). Opening the PR would still need a GitHub token or the `gh` CLI on the Mac; not built.
 Do not silently decide these. Ask the owner, or implement the proposal and flag it.
 
 ---
@@ -447,6 +470,7 @@ A second front end in `ui/` (Tauri 2), on the same library as the CLI. UI draft:
 - **Unlock and Touch ID:** `sudo -A` goes straight to the askpass program and never offers Touch ID; plain `sudo` offers it even without a terminal (checked 2026-11-13). So `Firewall::start` tries plain `sudo` first and falls back to `sudo -A` with the dialog. `Session::open` reports its steps through a callback; the window shows them next to a spinner while a command runs (`progress` command).
 - **Errors:** every command failure is shown as a banner with what was attempted and the cause, until dismissed or the next command. While locked, `status` reports what blocks unlocking (config, `[llm]`, pf anchor) and the window shows that instead of the form. A box that stops by itself, and boxes that could not be stopped at lock, are reported, not swallowed.
 - **Box list:** each box has its own Start or Stop button in the list; the detail pane has none.
+- **Publishing:** the detail pane has the push mode (three choices, with the CI warning for `always`) and the agent's requests, each with Review (commits and diffstat), Publish and Drop.
 - **Delete a box:** in the detail pane, with a confirmation in the window. Same effect as `sandcastle reset` (`lifecycle::delete`): the box, its network and both volumes go; a running box is stopped first. The host folder is never touched or deleted (owner question, 2026-11-13: the box's content goes, the folder stays).
 - **Search path:** an app started from Finder gets only the system folders in `PATH`. The app adds `/opt/homebrew/bin` and `/usr/local/bin` at start (`search_path` in `ui/src/main.rs`), or `container` and `bw` are not found (v0.2.0 failed this way). Test the app by starting it with `open`, not from a shell.
 - **Testing without root:** `sandcastle-ui --no-firewall`, same meaning and warning as the CLI flag.
