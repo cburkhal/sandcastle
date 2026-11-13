@@ -109,9 +109,17 @@ OpenCode is pinned to an exact version and taken from the GitHub release, not fr
 - The image build downloads `opencode-linux-arm64.tar.gz` and fails unless its SHA-256 matches the pinned value from the release's `SHA256SUMS` file. See `spike/Containerfile`.
 - To move to another release, change `OPENCODE_VERSION` and `OPENCODE_SHA256` together and re-run the spike. Do not go below 2.2.6 (it added origin checks on the server API).
 
+## Install with Homebrew
+
+```
+brew install cburkhal/tap/sandcastle
+```
+
+This builds the command-line tool from the latest release tag and installs the Bitwarden CLI with it. Apple `container` is still the separate installer above. Then continue with `sandcastle init` below, without the `./target/release/` prefix.
+
 ## Build and use
 
-Run these in the repository root:
+To build from a checkout instead, run these in the repository root:
 
 ```
 cargo build --release
@@ -162,7 +170,7 @@ packaging/bundle.sh                       # build sandcastle.app with the CLI in
 - `sudo` asks through Touch ID if you enabled it, otherwise through a macOS password dialog.
 - The chat opens in your default browser, as with the CLI.
 - `packaging/bundle.sh` needs the Tauri bundler: `cargo install tauri-cli --version "^2" --locked`. Until the release is signed with a Developer ID, the built app is unsigned: open it with right-click > Open.
-- Planned install, once signed releases exist: `brew install --cask cburkhal/tap/sandcastle` (template in `packaging/homebrew/`).
+- Planned install of the app, once signed releases exist: `brew install --cask cburkhal/tap/sandcastle` (template in `packaging/homebrew/`).
 
 ### Getting the agent's work
 
