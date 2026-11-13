@@ -27,10 +27,27 @@ jobs:
       # renovate: datasource=github-tags depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Unit tests
-        run: cargo test --locked --workspace
+        # In release mode, so the build below reuses the compiled dependencies
+        # instead of compiling them a second time. Local runs stay in debug.
+        run: cargo test --locked --workspace --release
       - name: Install the Tauri bundler
-        # renovate: datasource=crate depName=tauri-cli
-        run: cargo install tauri-cli --version "2.12.4" --locked
+        # The prebuilt binary from Tauri's GitHub release, checked against a
+        # pinned SHA-256 (GitHub shows it as the asset's digest). Compiling
+        # it with `cargo install` took about 8 minutes.
+        env:
+          # renovate: datasource=github-releases depName=tauri-apps/tauri extractVersion=^tauri-cli-v(?<version>.*)$
+          TAURI_CLI_VERSION: "2.12.4"
+          TAURI_CLI_SHA256: f71a34ada728ca2d1a51c28d6d21639e1e080898ec69ec8d49c5da3b7e8bc1be
+        run: |
+          dir="$RUNNER_TEMP/tauri-cli"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --output "$dir/cargo-tauri.zip" \
+            "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v${TAURI_CLI_VERSION}/cargo-tauri-aarch64-apple-darwin.zip"
+          echo "${TAURI_CLI_SHA256}  $dir/cargo-tauri.zip" | shasum -a 256 --check
+          unzip -q "$dir/cargo-tauri.zip" -d "$dir"
+          chmod +x "$dir/cargo-tauri"
+          echo "$dir" >> "$GITHUB_PATH"
+          "$dir/cargo-tauri" --version
       - name: Build, sign and notarize
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
