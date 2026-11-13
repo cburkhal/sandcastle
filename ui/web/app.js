@@ -12,6 +12,8 @@ let busy = null;
 let confirming = null;
 // What the last review of a push request showed: { box, branch, text } or null.
 let reviewed = null;
+// Which unlock step runs (1 to 3), from the app; 0 before the first report.
+let unlockStep = 0;
 // The last error of a background refresh, so it is not shown again and again.
 let refreshError = null;
 
@@ -49,8 +51,13 @@ async function run(what, action) {
   // The app reports what a long command is waiting for.
   const poll = setInterval(async () => {
     try {
-      const step = await invoke("progress");
-      if (busy && step) $("busy-text").textContent = step;
+      const progress = await invoke("progress");
+      if (!busy) return;
+      if (progress.text) $("busy-text").textContent = progress.text;
+      if (busy.kind === "unlock" && progress.step !== unlockStep) {
+        unlockStep = progress.step;
+        render();
+      }
     } catch (_) { /* the fixed text stays */ }
   }, 400);
   let ok = true;
@@ -61,6 +68,7 @@ async function run(what, action) {
     showError(what.failed, error);
   }
   clearInterval(poll);
+  unlockStep = 0;
   busy = null;
   $("busy").hidden = true;
   await refresh();
@@ -101,7 +109,10 @@ function boxRow(box) {
   state.textContent = mine && busy.kind === "start" ? "Starting…"
     : mine && busy.kind === "stop" ? "Stopping…"
     : box.running ? "Running" : "Stopped";
-  if (box.requests.length > 0) state.textContent += ` · ${box.requests.length} to publish`;
+  if (box.requests.length > 0) {
+    state.textContent += ` · ${box.requests.length} waiting`;
+    state.classList.add("attention");
+  }
   label.append(name, state);
   select.append(dot, label);
   select.addEventListener("click", () => {
@@ -139,6 +150,7 @@ function render() {
 
   $("boxes").replaceChildren(...current.boxes.map(boxRow));
 
+  $("version").textContent = current.version || "";
   $("session-state").textContent = current.unlocked ? "Secrets in memory, vault locked" : "Locked";
   $("firewall-state").textContent = current.firewall
     ? (current.unlocked ? "Firewall helper active" : "")
@@ -158,10 +170,16 @@ function render() {
   }));
   $("unlock").hidden = current.unlocked || blocked;
   $("password-row").hidden = !current.needs_password;
-  $("sudo-hint").hidden = !current.firewall;
+  $("sudo-hint").hidden = !current.firewall || unlocking;
   $("password").disabled = working;
   $("unlock-button").disabled = working;
   $("unlock-button").textContent = unlocking ? "Unlocking…" : "Unlock";
+  // The steps of unlocking: done, current, to come.
+  $("steps").hidden = !unlocking;
+  $("step-2").hidden = !current.firewall;
+  for (const number of [1, 2, 3]) {
+    $(`step-${number}`).className = number < unlockStep ? "done" : number === unlockStep ? "current" : "";
+  }
 
   const showDetail = current.unlocked && box !== null;
   $("detail").hidden = !showDetail;
@@ -175,7 +193,8 @@ function render() {
       : box.running ? "Running" : "Stopped. Start it in the list on the left to chat or fetch.";
     renderPublishing(box, working);
     if (confirming !== box.name) confirming = null;
-    $("delete").hidden = confirming !== null;
+    $("delete-rest").hidden = confirming !== null;
+    $("danger").classList.toggle("confirming", confirming !== null);
     $("delete").disabled = working;
     $("confirm-delete").hidden = confirming === null;
     $("confirm-title").textContent = `Delete the box for ${box.repo}?`
@@ -187,18 +206,37 @@ function render() {
   }
 }
 
+const PUSH_MODE_TEXT = {
+  ask: "The branch waits in this window until you publish or drop it. This Mac publishes it as sandcastle/<branch>; the box never gets credentials.",
+  always: "This Mac publishes the branch at once as sandcastle/<branch>, without review. Changes to CI configuration still wait for you.",
+  off: "Pushes are refused. You take the agent's commits with Fetch.",
+};
+
 function renderPublishing(box, working) {
-  for (const radio of document.querySelectorAll('input[name="push-mode"]')) {
-    radio.checked = radio.value === box.push_mode;
-    radio.disabled = working;
+  for (const button of document.querySelectorAll("#push-mode button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === box.push_mode));
+    button.disabled = working;
   }
+  $("push-mode-text").textContent = PUSH_MODE_TEXT[box.push_mode] || "";
   $("push-warning").hidden = box.push_mode !== "always";
 
+  $("waiting").hidden = box.requests.length === 0;
   $("requests").replaceChildren(...box.requests.map((request) => {
     const item = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "row";
     const label = document.createElement("span");
-    label.className = "mono";
-    label.textContent = request.branch + (request.reason ? `  (${request.reason})` : "");
+    const branch = document.createElement("span");
+    branch.className = "mono";
+    branch.textContent = request.branch;
+    label.append(branch);
+    if (request.reason) {
+      const reason = document.createElement("span");
+      reason.className = "reason";
+      reason.textContent = request.reason.charAt(0).toUpperCase() + request.reason.slice(1);
+      label.append(reason);
+    }
+    const shown = reviewed !== null && reviewed.box === box.name && reviewed.branch === request.branch;
     const actions = document.createElement("span");
     actions.className = "actions";
     const button = (text, className, onClick) => {
@@ -210,20 +248,22 @@ function renderPublishing(box, working) {
       b.addEventListener("click", onClick);
       return b;
     };
+    const review = button("Review", "", () => run(
+      { busy: `Fetching ${request.branch} from the box.`, failed: `Could not review ${request.branch}`, kind: "review" },
+      async () => {
+        const summary = await invoke("review_push", { name: box.name, branch: request.branch });
+        const lines = summary.commits.length
+          ? [`${summary.commits.length} new commit(s) on ${summary.branch}:`, ...summary.commits.map((c) => `  ${c}`), "", summary.stat]
+          : [`Nothing new on ${summary.branch}: every commit is already in your repository or on its remote.`];
+        if (summary.touches_ci) lines.push("", "WARNING: these commits change CI configuration. CI may run them with its secrets once published.");
+        lines.push("", `Read the changes in a terminal: git log -p sandcastle/${summary.branch} --not --branches --remotes`);
+        reviewed = { box: box.name, branch: request.branch, text: lines.join("\n") };
+      },
+    ));
+    review.setAttribute("aria-pressed", String(shown));
     actions.append(
-      button("Review", "", () => run(
-        { busy: `Fetching ${request.branch} from the box.`, failed: `Could not review ${request.branch}`, kind: "review" },
-        async () => {
-          const summary = await invoke("review_push", { name: box.name, branch: request.branch });
-          const lines = summary.commits.length
-            ? [`${summary.commits.length} new commit(s) on ${summary.branch}:`, ...summary.commits.map((c) => `  ${c}`), "", summary.stat]
-            : [`Nothing new on ${summary.branch}: every commit is already in your repository or on its remote.`];
-          if (summary.touches_ci) lines.push("", "WARNING: these commits change CI configuration. CI may run them with its secrets once published.");
-          lines.push("", `Read the changes in a terminal: git log -p sandcastle/${summary.branch} --not --branches --remotes`);
-          reviewed = { box: box.name, branch: request.branch, text: lines.join("\n") };
-        },
-      )),
-      button("Publish", "primary", () => run(
+      review,
+      button("Publish", "publish", () => run(
         { busy: `Publishing ${request.branch} from this Mac.`, failed: `Could not publish ${request.branch}`, kind: "publish" },
         async () => {
           addNotices([await invoke("approve_push", { name: box.name, branch: request.branch })]);
@@ -238,22 +278,23 @@ function renderPublishing(box, working) {
         },
       )),
     );
-    item.append(label, actions);
+    row.append(label, actions);
+    item.append(row);
+    if (shown) {
+      const text = document.createElement("pre");
+      text.textContent = reviewed.text;
+      item.append(text);
+    }
     return item;
   }));
-
-  const showReview = reviewed !== null && reviewed.box === box.name
-    && box.requests.some((request) => request.branch === reviewed.branch);
-  $("review").hidden = !showReview;
-  $("review").textContent = showReview ? reviewed.text : "";
 }
 
-for (const radio of document.querySelectorAll('input[name="push-mode"]')) {
-  radio.addEventListener("change", () => {
+for (const button of document.querySelectorAll("#push-mode button")) {
+  button.addEventListener("click", () => {
     const box = current.boxes.find((b) => b.name === selected);
-    if (!box || !radio.checked) return;
+    if (!box || button.dataset.mode === box.push_mode) return;
     run({ busy: "Saving.", failed: "Could not change the setting", kind: "mode" },
-      () => invoke("set_push_mode", { name: box.name, mode: radio.value }));
+      () => invoke("set_push_mode", { name: box.name, mode: button.dataset.mode }));
   });
 }
 

@@ -134,6 +134,30 @@ pub fn dismiss(home: &Path, box_name: &str, branch: &str) -> Result<()> {
     Ok(())
 }
 
+fn refused_path(home: &Path, box_name: &str) -> PathBuf {
+    state::box_dir(home, box_name).join("push-refused.json")
+}
+
+/// Branches the agent tried to push since the box started while pushing was
+/// off, so a front end can tell the owner that there is work to fetch.
+pub fn refused(home: &Path, box_name: &str) -> Vec<String> {
+    fs::read_to_string(refused_path(home, box_name))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn note_refused(home: &Path, box_name: &str, branch: &str) -> Result<()> {
+    let mut branches = refused(home, box_name);
+    if !branches.iter().any(|known| known == branch) {
+        branches.push(branch.to_string());
+        let path = refused_path(home, box_name);
+        fs::create_dir_all(path.parent().expect("the path has a parent"))?;
+        fs::write(path, serde_json::to_string(&branches)?)?;
+    }
+    Ok(())
+}
+
 /// The mode of a box. Read from the record each time, so a change applies to
 /// a running box at once, also when another sandcastle process made it.
 pub fn mode(home: &Path, box_name: &str) -> Result<PushMode> {
@@ -159,6 +183,8 @@ pub struct Gate {
 
 impl Gate {
     pub fn new(cx: &App, box_name: &str, repo: &Path, log: Log) -> Self {
+        // What was refused in an earlier run is old news.
+        let _ = fs::remove_file(refused_path(cx.home, box_name));
         Gate {
             home: cx.home.to_path_buf(),
             box_name: box_name.to_string(),
@@ -204,6 +230,7 @@ impl Gate {
         match mode(&self.home, &self.box_name)? {
             PushMode::Off => {
                 self.log.refused(&format!("push: refused branch {branch}: publishing is off for this box"));
+                note_refused(&self.home, &self.box_name, branch)?;
                 Ok(Answer::Refused(
                     "Publishing is off for this box. Commit your work; the owner takes it with `sandcastle fetch`. Do not retry."
                         .into(),
@@ -484,6 +511,17 @@ mod tests {
         let home = std::env::temp_dir().join(format!("sandcastle-push-{test}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         home
+    }
+
+    #[test]
+    fn refused_branches_are_remembered_once() {
+        let home = home("refused");
+        assert!(refused(&home, "sc-a").is_empty());
+        note_refused(&home, "sc-a", "one").unwrap();
+        note_refused(&home, "sc-a", "one").unwrap();
+        note_refused(&home, "sc-a", "two").unwrap();
+        assert_eq!(refused(&home, "sc-a"), ["one", "two"]);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

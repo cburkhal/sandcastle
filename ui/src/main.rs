@@ -8,14 +8,14 @@
 //! The chat itself stays in the browser. The window never loads remote
 //! content, and its only powers are the commands below.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sandcastle::agent::opencode::OpenCode;
 use sandcastle::core::lifecycle::{self, App};
-use sandcastle::core::session::{self, Session};
+use sandcastle::core::session::{self, Session, Step};
 use sandcastle::core::up::{self, RunningBox};
 use sandcastle::core::state::PushMode;
 use sandcastle::core::{config, git, push, state};
@@ -45,9 +45,11 @@ struct Inner {
     session: Mutex<Option<Arc<Session>>>,
     boxes: Mutex<HashMap<String, RunningBox>>,
     /// What a running command is waiting for, shown in the window.
-    progress: std::sync::Mutex<String>,
+    progress: std::sync::Mutex<Progress>,
     /// Things that happened without a click, shown once.
     notices: std::sync::Mutex<Vec<String>>,
+    /// Refused pushes (box, branch) the owner was already told about.
+    told_refused: std::sync::Mutex<HashSet<(String, String)>>,
 }
 
 impl Inner {
@@ -55,9 +57,9 @@ impl Inner {
         App { home: &self.home, runtime: &RUNTIME, agent: &AGENT }
     }
 
-    fn set_progress(&self, step: &str) {
+    fn set_progress(&self, step: u8, text: &str) {
         if let Ok(mut progress) = self.progress.lock() {
-            *progress = step.to_string();
+            *progress = Progress { step, text: text.to_string() };
         }
     }
 
@@ -89,6 +91,18 @@ impl Inner {
     }
 }
 
+/// What a running command is waiting for. `step` numbers the unlock steps
+/// the window lists (0: none of them).
+#[derive(Clone, Default, Serialize)]
+struct Progress {
+    step: u8,
+    text: String,
+}
+
+const UNLOCK_RUNTIME: u8 = 1;
+const UNLOCK_SUDO: u8 = 2;
+const UNLOCK_SECRETS: u8 = 3;
+
 type Shared<'a> = tauri::State<'a, Arc<Inner>>;
 
 /// Errors cross to the window as text. Core errors never contain secrets.
@@ -109,6 +123,7 @@ struct BoxView {
 
 #[derive(Serialize)]
 struct Status {
+    version: &'static str,
     unlocked: bool,
     firewall: bool,
     needs_password: bool,
@@ -152,8 +167,20 @@ async fn status(inner: Shared<'_>) -> Result<Status, String> {
         }
     }
 
-    let views = state::list(&inner.home)
-        .map_err(text)?
+    let records = state::list(&inner.home).map_err(text)?;
+    // A push refused by the "Never" setting: the agent has work to fetch.
+    for record in records.iter().filter(|record| boxes.contains_key(&record.name)) {
+        for branch in push::refused(&inner.home, &record.name) {
+            let first = inner.told_refused.lock().map(|mut told| told.insert((record.name.clone(), branch.clone())));
+            if first.unwrap_or(false) {
+                inner.notice(format!(
+                    "The agent tried to push {branch} in the box for {}. Pushing is set to Never for this box; take its commits with Fetch.",
+                    record.repo.display()
+                ));
+            }
+        }
+    }
+    let views = records
         .into_iter()
         .map(|record| BoxView {
             running: boxes.contains_key(&record.name),
@@ -165,12 +192,12 @@ async fn status(inner: Shared<'_>) -> Result<Status, String> {
         })
         .collect();
     let notices = inner.notices.lock().map(|mut notices| std::mem::take(&mut *notices)).unwrap_or_default();
-    Ok(Status { unlocked, firewall: inner.firewall, needs_password, boxes: views, problems, notices })
+    Ok(Status { version: env!("CARGO_PKG_VERSION"), unlocked, firewall: inner.firewall, needs_password, boxes: views, problems, notices })
 }
 
 /// What the running command is waiting for. Takes no lock a command holds.
 #[tauri::command]
-fn progress(inner: Shared<'_>) -> String {
+fn progress(inner: Shared<'_>) -> Progress {
     inner.progress.lock().map(|progress| progress.clone()).unwrap_or_default()
 }
 
@@ -186,7 +213,7 @@ async fn unlock(inner: Shared<'_>, password: Option<String>) -> Result<(), Strin
     let session = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Session> {
         let inner = worker;
         let cx = inner.cx();
-        inner.set_progress("Starting Apple container.");
+        inner.set_progress(UNLOCK_RUNTIME, "Starting Apple container.");
         cx.runtime.ensure_started()?;
         let mut store = match password {
             Some(password) if !password.is_empty() => Bitwarden::with_password(Secret::new(password)),
@@ -201,10 +228,16 @@ async fn unlock(inner: Shared<'_>, password: Option<String>) -> Result<(), Strin
         } else {
             None
         };
-        Session::open(&cx, &mut store, prompt, &|step| inner.set_progress(step))
+        Session::open(&cx, &mut store, prompt, &|step| {
+            let number = match step {
+                Step::Sudo => UNLOCK_SUDO,
+                Step::Secrets => UNLOCK_SECRETS,
+            };
+            inner.set_progress(number, step.text())
+        })
     })
     .await;
-    inner.set_progress("");
+    inner.set_progress(0, "");
     let session = session.map_err(|error| error.to_string())?.map_err(text)?;
     *slot = Some(Arc::new(session));
     Ok(())
@@ -221,6 +254,10 @@ async fn start_box(inner: Shared<'_>, path: String) -> Result<(), String> {
     let cx = inner.cx();
     let plan = up::plan(&cx, Path::new(&path)).map_err(text)?;
     let running = up::start(&cx, &session, plan).await.map_err(text)?;
+    // A new run of the box starts with a clean slate of refused pushes.
+    if let Ok(mut told) = inner.told_refused.lock() {
+        told.retain(|(name, _)| name != &running.name);
+    }
     inner.boxes.lock().await.insert(running.name.clone(), running);
     Ok(())
 }
@@ -355,6 +392,7 @@ fn main() {
         boxes: Mutex::new(HashMap::new()),
         progress: Default::default(),
         notices: Default::default(),
+        told_refused: Default::default(),
     });
 
     let on_exit = Arc::clone(&inner);
