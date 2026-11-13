@@ -32,7 +32,7 @@ fn has_anchor_line(pf_conf: &str) -> bool {
 }
 
 fn sudo(reason: &str) -> Command {
-    println!("\n>> macOS login password (sudo, admin rights on this Mac)");
+    println!("\n>> macOS login password or Touch ID (sudo, admin rights on this Mac)");
     println!("   Needed to: {reason}");
     println!("   (No prompt appears if sudo was used in this terminal a moment ago.)");
     let mut command = Command::new("sudo");

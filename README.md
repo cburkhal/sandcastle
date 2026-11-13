@@ -2,7 +2,7 @@
 
 One OpenCode instance per Git repo, each in its own Apple `container` VM on macOS. The LLM key and Git credentials never enter the VM.
 
-Status: early. The design is verified by a shell spike. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
+Status: v0.1. The design is verified by a shell spike and an end-to-end check. The CLI starts a hardened box and the relay: you can chat with OpenCode in the browser, and the box reaches only the LLM gateway and the allowlisted hosts. The design lives in [CLAUDE.md](CLAUDE.md), the spike results in [spike/NOTES.md](spike/NOTES.md).
 
 ## Requirements
 
@@ -11,7 +11,7 @@ Status: early. The design is verified by a shell spike. The CLI starts a hardene
 - Bitwarden CLI `bw` (tested with 2026.10.1).
 - Homebrew, for `bw`, Rust and the spike's proxy.
 - Rust, to build sandcastle (`brew install rust`; tested with 1.99.1).
-- Admin rights: the firewall (pf) rules that keep the box away from other services on the Mac need `sudo`, once in `init` and once per `up`.
+- Admin rights: the firewall (pf) rules that keep the box away from other services on the Mac need `sudo`, once in `init` and once per `up`. With Touch ID for `sudo` (below) that is a fingerprint, not a typed password.
 
 ## Install Apple `container`
 
@@ -19,18 +19,13 @@ Status: early. The design is verified by a shell spike. The CLI starts a hardene
 
 1. Download the signed installer package (`container-<version>-installer-signed.pkg`) from the [releases page](https://github.com/apple/container/releases). Use the version above or newer.
 2. Open the package and follow the installer. It asks for an admin password and installs under `/usr/local`.
-3. Start the system service. On first start it offers to download a Linux kernel; accept.
-
-   ```
-   container system start
-   ```
-
-4. Check it:
+3. Check it:
 
    ```
    container --version
-   container system status
    ```
+
+There is no need to run `container system start`: sandcastle starts the service when it is down (after a reboot, for example) and lets it download the default Linux kernel on first start.
 
 Later:
 
@@ -38,6 +33,16 @@ Later:
 - Remove: `/usr/local/bin/uninstall-container.sh -d` deletes the tool and its data, `-k` keeps the data.
 
 `container` flags change between releases. sandcastle is tested against the version listed above; after an update, re-run the spike scripts before trusting it.
+
+## Touch ID for sudo (optional)
+
+`sandcastle up` needs root once, to load the firewall rules. To confirm with a fingerprint instead of typing the macOS password, enable Touch ID for `sudo` once. macOS keeps this file across updates:
+
+```
+sed 's/^#auth/auth/' /etc/pam.d/sudo_local.template | sudo tee /etc/pam.d/sudo_local
+```
+
+The file must then contain the line `auth       sufficient     pam_tid.so`. To undo it: `sudo rm /etc/pam.d/sudo_local`. This changes `sudo` for every terminal on the Mac, not only for sandcastle. With the lid closed or over SSH, `sudo` falls back to the password.
 
 ## Install the Bitwarden CLI
 
@@ -131,10 +136,10 @@ sandcastle up
 
 `up` asks for two passwords at the start and says which is which:
 
-- your **macOS login password** (sudo), to load the firewall rules for the box,
+- your **macOS login password** or Touch ID (sudo), to load the firewall rules for the box,
 - your **Bitwarden master password**, to read the key.
 
-After that nothing prompts. It checks the gateway and the key, starts the box and the relay, and opens the browser on a one-time login link. Ctrl-C stops the box and removes the firewall rules.
+After that nothing prompts. It checks the gateway and the key, starts the box and the relay, and opens the browser on a one-time login link. OpenCode offers only the models your gateway lists; its built-in providers are switched off. Ctrl-C stops the box and removes the firewall rules.
 
 ```
 sandcastle up --no-browser            # print the login link instead of opening it
@@ -163,6 +168,15 @@ While a box runs, hosts it tried to reach but was refused are printed once in th
 `up --no-firewall` starts without root and without firewall rules. The box can then reach other services on your Mac; use it for testing only.
 
 What exists on the Mac afterwards: the config file, state under `~/Library/Application Support/sandcastle/`, the image `sandcastle-opencode:<version>`, and per repo one network and two volumes named after the box. `reset` removes the per-repo parts.
+
+## End-to-end check
+
+```
+e2e/run.sh              # no root, no prompts
+e2e/run.sh --firewall   # also checks the pf rules; asks for sudo once
+```
+
+It builds the binary, starts a box for a throwaway repo and checks from outside what the design promises: the UI login and its Host and Origin checks, the hardened box, the clone without untracked files, the egress allowlist, the key swap in the LLM relay, `fetch`, and that stop and `reset` leave nothing behind. It runs with its own home folder, a local fake gateway and a key from an environment variable, so your config, boxes and vault are not touched. It needs the box image (`sandcastle init`) and internet access for the npm check. Run it after every update of `container` or OpenCode.
 
 ## Running the spike
 

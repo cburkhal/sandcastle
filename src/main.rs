@@ -83,6 +83,8 @@ fn run(cli: Cli) -> Result<()> {
     let runtime = AppleContainer::new();
     let agent = OpenCode;
     let cx = App { home: &home, runtime: &runtime, agent: &agent };
+    // Every command talks to the runtime, and its service is down after a reboot.
+    cx.runtime.ensure_started()?;
 
     match cli.command {
         Command::Init { no_firewall } => lifecycle::init(&cx, !no_firewall),

@@ -109,6 +109,9 @@ pub struct ExecOutput {
 }
 
 pub trait SandboxRuntime {
+    /// Make the runtime usable, starting its background service if needed.
+    fn ensure_started(&self) -> Result<()>;
+
     /// Build an image from a Containerfile.
     fn image_build(&self, tag: &str, containerfile: &Path, context: &Path) -> Result<()>;
     /// Digest of a local image, or `None` if it does not exist.

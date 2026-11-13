@@ -46,6 +46,9 @@ impl Agent for OpenCode {
             "$schema": "https://opencode.ai/config.json",
             // Full autonomy: safety comes from the box, not from permission prompts.
             "permission": { "*": "allow" },
+            // Only the gateway's models: without this OpenCode also offers its
+            // built-in providers, which the box cannot reach anyway.
+            "enabled_providers": ["relay"],
             "provider": {
                 "relay": {
                     "npm": "@ai-sdk/openai-compatible",
@@ -129,5 +132,6 @@ mod tests {
         assert_eq!(provider["options"]["apiKey"], "sandcastle-placeholder");
         assert!(provider["models"]["a/one"].is_object() && provider["models"]["b/two"].is_object());
         assert_eq!(json["permission"]["*"], "allow");
+        assert_eq!(json["enabled_providers"], json!(["relay"]));
     }
 }

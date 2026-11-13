@@ -6,7 +6,7 @@ Context for Claude Code working in this repo. Read this file fully before making
 - Design doc (source of the decisions below): https://claude.ai/artifact/Fede71J8PTPMntET8ztjJs
 - This file is newer than the design doc where they differ (clone-and-fetch instead of a read-write repo mount, OpenCode 2.x, pf rule, order of `up`).
 - Host setup (installing Apple `container` and the Bitwarden CLI, storing the LiteLLM key): see `README.md`.
-- Status as of 2026-11-12: **design verified by a shell spike (`spike/NOTES.md`); all four build steps are written and run** (box, relay, Bitwarden, pf, `fetch`). Not done: an automated end-to-end check, and the merge to `main` with the v0.1 tag. See "Current status and next steps".
+- Status as of 2026-11-13: **v0.1.** Design verified by a shell spike (`spike/NOTES.md`); all four build steps are written and run (box, relay, Bitwarden, pf, `fetch`); `e2e/run.sh` checks the real binary end to end. See "Current status and next steps".
 
 ---
 
@@ -103,13 +103,14 @@ Listens on `127.0.0.1` for the browser and on the host side of each box's intern
 
 The relay checks the peer address of box-side connections: the host sees the box's own address, not a NAT address. Connections from any other address are dropped.
 
-As built: the LLM relay listens on `<gateway>:4180` and forwards only paths under `/v1/`; the egress proxy listens on `<gateway>:4181`, accepts only `CONNECT <host>:443` for exact allowlisted names, and refuses names that resolve to private or local addresses. The UI gateway listens on a free port on `127.0.0.1`. `up` asks the gateway for its models (`/v1/models`) before it creates anything, which also proves the key works, and writes them into the agent's config. The gateway URL must be `https://`; plain `http://` is accepted only for `127.0.0.1`. The relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`; refused hosts are also printed once on the terminal.
+As built: the LLM relay listens on `<gateway>:4180` and forwards only paths under `/v1/`; the egress proxy listens on `<gateway>:4181`, accepts only `CONNECT <host>:443` for exact allowlisted names, and refuses names that resolve to private or local addresses. The UI gateway listens on a free port on `127.0.0.1`. `up` asks the gateway for its models (`/v1/models`) before it creates anything, which also proves the key works, and writes them into the agent's config. The config sets `enabled_providers` to the relay's provider only, so OpenCode's built-in models (the free `opencode/*` ones, which the box cannot reach) are not offered. A further model source would be added to that list. The gateway URL must be `https://`; plain `http://` is accepted only for `127.0.0.1`. The relay log is `~/Library/Application Support/sandcastle/boxes/<box>/relay.log`; refused hosts are also printed once on the terminal.
 
 Why the login stays (even though "all is local"): an unauthenticated OpenCode server on localhost is reachable from any website open in the browser. CVE-2026-22812 (OpenCode < 1.0.216) showed permissive CORS let any web page execute commands through OpenCode's server. In 2.2.7 the API answers 401 without credentials and 2.2.6 added origin checks, but the relay does not rely on either. OpenCode's SECURITY.md states it does not sandbox the agent and its permission system is a UX feature, not isolation. The user asked for no password; the decision is an invisible login (one-time link + cookie), which is zero friction. Confirmed by the owner (question 6).
 
 ### 2.3 The box (Apple container)
 
 - **Image:** `debian:stable-slim` pinned by digest, plus Node, Git, ripgrep and a pinned OpenCode. Node comes from nodejs.org, pinned by version and SHA-256 (22.23.5): Debian's Node 20 ignores the proxy variables for `fetch`; `NODE_USE_ENV_PROXY` needs 22.21 or newer. OpenCode comes from the GitHub release tarball, checked against a pinned SHA-256 at build time (2.x is not on npm). Built locally with `container build` from a Containerfile (OCI). Non-root user (uid 1001 in the spike).
+- **Runtime service:** `container system start` must have run since the last reboot. Every sandcastle command starts it when it is down (`ensure_started` in the runtime module), with `--enable-kernel-install` so the first start does not prompt.
 - **Entrypoint:** `opencode serve --hostname 0.0.0.0 --port 4096` with `OPENCODE_SERVER_PASSWORD` set to the random per-run value (only the relay knows it). There is no `opencode web` in 2.x. Only `serve` runs in the box; `opencode pair --remote` can open a tunnel to the internet and must stay blocked by the egress allowlist.
 - **Network:** per-box network via `container network create --internal` (host-only access). The relay is the only way out. `container` picks the subnet; read gateway and subnet from `network inspect`. Box addresses change between starts.
 - **Host firewall:** "internal" keeps the box off the internet and the LAN, but not off the Mac: without a filter the box reaches every host service that listens on `0.0.0.0` or `::`. A pf rule set per box, by bridge interface, allows only box to relay ports and host gateway address to box port 4096, and blocks everything else in both directions (see 2.6).
@@ -168,6 +169,7 @@ block return out quick on <bridge> all
 - pf is enabled with a reference token (`pfctl -E`) and released with `pfctl -X` on `down`.
 - Needs root, once per `up`: in the secrets phase `up` starts a small root helper through `sudo` (`src/firewall.rs`). The helper waits, loads the rules when `up` sends them, and removes them and releases the pf token when its input closes. That happens on Ctrl-C, on `down` from another terminal, and also if sandcastle crashes, so no second prompt is needed and no rules are left behind. The helper ignores terminal signals so Ctrl-C cannot kill it before the cleanup.
 - `up --no-firewall` skips all of this with a warning. It exists for testing without root.
+- The prompt per `up` stays (owner decision, 2026-11-13). A root helper installed by `init` with a passwordless sudoers rule was offered and not chosen. Instead the owner enables Touch ID for `sudo` (`/etc/pam.d/sudo_local`, see `README.md`), so the prompt is a fingerprint. No code depends on it.
 
 ---
 
@@ -208,6 +210,7 @@ sandcastle/
   src/runtime/mod.rs                trait SandboxRuntime + BoxSpec
   src/runtime/apple_container.rs
   spike/                            shell scripts + notes for the manual spike (step 1)
+  e2e/                              end-to-end check of the real binary, with a fake gateway
 ```
 
 ### Example config (`~/.config/sandcastle/config.toml`, no secret values)
@@ -344,6 +347,10 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Modules for secrets, agent, runtime | Replaceable later at minimal cost; no speculative adapters |
 | Scope: owner only | Other roles dropped from scope |
 | Name: sandcastle | Chosen by owner |
+| Touch ID for `sudo` instead of a passwordless root helper (2026-11-13) | Less typing without a new passwordless path to root |
+| Only the gateway's models are offered (`enabled_providers`) (2026-11-13) | OpenCode's built-in free models cannot work in the box and one was the default |
+| sandcastle starts the `container` service itself (2026-11-13) | `init` and `up` failed after a reboot |
+| v0.1 is released by a PR from `spike` to `main` (2026-11-13) | Owner request |
 
 ---
 
@@ -360,7 +367,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** design verified by the shell spike; build steps 1 to 4 are written and run. Open before v0.1: an automated end-to-end check and the merge to `main`. Work happens on the `spike` branch until v0.1.
+**Status:** v0.1. Design verified by the shell spike; build steps 1 to 4 are written and run; `e2e/run.sh` passes without the firewall (2026-11-13). Its `--firewall` mode needs `sudo` and has not been run yet. Work happened on the `spike` branch until v0.1; after that, branch from `main`.
 
 **Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 
@@ -380,8 +387,8 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 
 1. **Skeleton that starts a box. Done 2026-11-12.** Checked by hand: `init` builds the image; `up` starts a box as uid 1001 with read-only root, no capabilities and no internet, UI on the box address only, API answering 401; Ctrl-C and `down` stop it; a second `up` keeps the volumes; `reset` removes everything. The secrets trait is not in the tree yet; it arrives with step 3. Cargo project, config loading, the three module traits. Runtime module wraps the `container` CLI: network, volumes with the ownership fix, run, exec, stop, remove. `init` builds the image; `up`, `down`, `ls`, `reset` work without a relay. Done when `up` starts a hardened box with OpenCode serving, reachable only from the host.
 2. **Relay. Done 2026-11-12**, except that the web UI has not been tried in a real browser yet (owner to check) and it ran against a local fake gateway, not the real one. Verified end to end with OpenCode in the box: one-time link and cookie, Host and Origin refusals, Basic Auth injection, npm, Git and Node `fetch` through the egress proxy, refusal of other hosts, key swap, streamed answers arriving chunk by chunk, `opencode run` answering through the relay. The parts: egress proxy (CONNECT allowlist, log of refused hosts); LLM relay (key swap, streaming); UI gateway (one-time link, cookie, Host and Origin checks, Basic Auth injection, streaming pass-through). The key comes from an environment variable until step 3. Done when the owner can chat in the browser and tests cover allowlist matching, Host/Origin checks and "key never in logs or errors".
-3. **Secrets phase and pf. Done 2026-11-12.** The owner ran `init` and `up` with the real vault, root and the real gateway: both prompts appeared and the browser opened on the OpenCode UI. Whether a chat message was answered is not recorded. Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
-4. **Git and release. `fetch` done 2026-11-12, release steps open.** Verified in a throwaway repo: first `up` clones into the box without untracked files; a commit made in the box arrives under `sandcastle/<branch>`; a hook and `core.fsmonitor` planted in the box do not reach the host repo; the host working tree is untouched; a later `up` keeps the clone and sees new host commits as `origin/*`; a repo with a credential in a remote URL is refused. Still open: `sandcastle fetch`; the spike scripts become an end-to-end check against the real binary; merge `spike`, tag v0.1.
+3. **Secrets phase and pf. Done 2026-11-12.** The owner ran `init` and `up` with the real vault, root and the real gateway: both prompts appeared and the browser opened on the OpenCode UI. A chat message was answered through the real gateway (owner, 2026-11-13). Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
+4. **Git and release. `fetch` done 2026-11-12, end-to-end check and release 2026-11-13.** Verified in a throwaway repo: first `up` clones into the box without untracked files; a commit made in the box arrives under `sandcastle/<branch>`; a hook and `core.fsmonitor` planted in the box do not reach the host repo; the host working tree is untouched; a later `up` keeps the clone and sees new host commits as `origin/*`; a repo with a credential in a remote URL is refused. The end-to-end check is `e2e/run.sh` (see `README.md`): it drives the real binary with its own home folder, a fake gateway and an `env://` key. Run it before every release and after every `container` or OpenCode update.
 
 **After v0.1:**
 - v0.2: `log`, `doctor`; model list from the gateway's `/v1/models`; image rebuild with digest pinning.

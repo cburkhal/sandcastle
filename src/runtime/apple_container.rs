@@ -166,6 +166,25 @@ fn parse_network(json: &str) -> Result<NetworkInfo> {
 }
 
 impl SandboxRuntime for AppleContainer {
+    fn ensure_started(&self) -> Result<()> {
+        // `container system status` exits non-zero while the services are down.
+        if call(&strings(&["system", "status"]), None)?.status.success() {
+            return Ok(());
+        }
+        println!("Starting the container system ...");
+        // Without the flag the first start asks whether to download the
+        // default guest kernel; sandcastle needs it, and must not prompt.
+        let status = Command::new(BIN)
+            .args(["system", "start", "--enable-kernel-install"])
+            .stdin(Stdio::null())
+            .status()
+            .with_context(|| format!("could not start `{BIN}`; is Apple container installed?"))?;
+        if !status.success() {
+            bail!("`{BIN} system start` failed");
+        }
+        Ok(())
+    }
+
     fn image_build(&self, tag: &str, containerfile: &Path, context: &Path) -> Result<()> {
         // Build output is long and useful, so it goes straight to the terminal.
         let status = Command::new(BIN)
