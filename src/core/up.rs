@@ -79,13 +79,19 @@ pub struct RunningBox {
     llm: Arc<LlmRelay>,
     log: Log,
     tasks: Vec<JoinHandle<()>>,
+    /// The agent's API in the box, and the password only sandcastle knows.
+    agent_address: SocketAddr,
+    password: String,
 }
 
 impl RunningBox {
-    /// A one-time link that logs the browser in. Each call replaces the last
-    /// unused link.
-    pub fn login_url(&self) -> Result<String> {
-        self.ui.new_login_url()
+    /// A one-time link that logs the browser in and lands in a chat. Each
+    /// call replaces the last unused link.
+    pub fn login_url(&self, cx: &App) -> Result<String> {
+        let authorization = format!("Basic {}", http::base64(format!("{}:{}", cx.agent.api_user(), self.password).as_bytes()));
+        let api = |method: &str, path: &str, body: &str| agent_api(self.agent_address, &authorization, method, path, body);
+        let landing = cx.agent.landing_path(&format!("http://127.0.0.1:{}", self.ui_port), &api);
+        self.ui.new_login_url(&landing)
     }
 
     pub fn llm_requests(&self) -> u64 {
@@ -117,8 +123,21 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     let models = llm.models().await?;
     println!("LLM gateway reachable, {} models.", models.len());
 
+    // The chat's port: the one from the last start if it is still free, so
+    // the browser sees the same site again. Fixed before the box starts.
+    let last_port = state::load(cx.home, &name)?.and_then(|record| record.ui_port);
+    let ui_listener = match last_port {
+        Some(port) => TcpListener::bind(("127.0.0.1", port)).await.ok(),
+        None => None,
+    };
+    let ui_listener = match ui_listener {
+        Some(listener) => listener,
+        None => TcpListener::bind("127.0.0.1:0").await.context("could not listen on 127.0.0.1")?,
+    };
+    let ui_port = ui_listener.local_addr()?.port();
+
     // --- 2. Network and volumes. ---
-    let record = BoxRecord { name: name.clone(), repo, image_digest };
+    let record = BoxRecord { name: name.clone(), repo, image_digest, ui_port: Some(ui_port) };
     state::save(cx.home, &record)?;
     // A stopped leftover from a crashed run would block the name.
     cx.runtime.remove(&name)?;
@@ -133,10 +152,6 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     let agent_config = cx.agent.config(&format!("http://{gateway}:{LLM_PORT}/v1"), &models);
     fs::write(box_dir.join("config").join(agent_config.name), agent_config.content)?;
 
-    // The UI port is fixed before the box starts so it can be shown early.
-    let ui_listener = TcpListener::bind("127.0.0.1:0").await.context("could not listen on 127.0.0.1")?;
-    let ui_port = ui_listener.local_addr()?.port();
-
     // --- 3. The box. From here on, failures must remove it again. ---
     let password = relay::random_token(32)?;
     let spec =
@@ -150,7 +165,9 @@ pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<Runnin
     )
     .await;
     match served {
-        Ok(ui) => Ok(RunningBox { name, repo: record.repo, ui_port, ui, llm, log, tasks }),
+        Ok((ui, agent_address)) => {
+            Ok(RunningBox { name, repo: record.repo, ui_port, ui, llm, log, tasks, agent_address, password })
+        }
         Err(error) => {
             for task in &tasks {
                 task.abort();
@@ -177,7 +194,7 @@ async fn serve(
     password: &str,
     has_source: bool,
     tasks: &mut Vec<JoinHandle<()>>,
-) -> Result<Arc<UiGateway>> {
+) -> Result<(Arc<UiGateway>, SocketAddr)> {
     let name = &record.name;
     let failed = |error: anyhow::Error| {
         let logs = cx.runtime.logs(name, 20).unwrap_or_default();
@@ -211,9 +228,10 @@ async fn serve(
     // --- 5. The agent starts once the relay answers; then the UI gateway. ---
     wait_until_healthy(cx, name, box_ip, agent_port).await.map_err(failed)?;
 
+    let agent_address = SocketAddr::new(box_ip, agent_port);
     let ui = Arc::new(UiGateway::new(
         ui_port,
-        SocketAddr::new(box_ip, agent_port),
+        agent_address,
         cx.agent.api_user(),
         password,
         relay::random_token(32)?,
@@ -222,7 +240,7 @@ async fn serve(
     ));
     let handler = ui.clone();
     tasks.push(tokio::spawn(http::serve(ui_listener, None, log, move |request| handler.clone().handle(request))));
-    Ok(ui)
+    Ok((ui, agent_address))
 }
 
 /// `sandcastle up`: one session, one box, until Ctrl-C.
@@ -235,7 +253,7 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
     let session = Session::open(cx, store, options.firewall.then_some(Prompt::Terminal))?;
     let running = start(cx, &session, plan).await?;
 
-    let login_url = running.login_url()?;
+    let login_url = running.login_url(cx)?;
     println!("Box {} is up for {}", running.name, running.repo.display());
     println!("  Open this link to chat (it works once): {login_url}");
     println!("  Allowed hosts: {}", session.config.egress.allow.join(", "));
@@ -352,6 +370,51 @@ async fn wait_until_healthy(cx: &App<'_>, name: &str, address: IpAddr, port: u16
     }
 }
 
+/// One authenticated request to the agent's API in the box; returns the
+/// response body. Small and blocking: it runs a few times per login link.
+fn agent_api(address: SocketAddr, authorization: &str, method: &str, path: &str, body: &str) -> Result<String> {
+    let timeout = Duration::from_secs(5);
+    let mut stream = TcpStream::connect_timeout(&address, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: {authorization}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    parse_api_response(&response)
+}
+
+/// Body of an HTTP/1.1 response with status 200, chunked or not.
+fn parse_api_response(response: &[u8]) -> Result<String> {
+    let split = response.windows(4).position(|window| window == b"\r\n\r\n");
+    let split = split.ok_or_else(|| anyhow!("the agent sent no HTTP response"))?;
+    let head = String::from_utf8_lossy(&response[..split]).to_ascii_lowercase();
+    let mut rest = &response[split + 4..];
+    if head.split(' ').nth(1) != Some("200") {
+        bail!("the agent answered {}", head.lines().next().unwrap_or_default());
+    }
+    if !head.contains("transfer-encoding: chunked") {
+        return Ok(String::from_utf8_lossy(rest).into_owned());
+    }
+    // Chunked: a hex length line, that many bytes, CRLF, until a zero length.
+    let mut body = Vec::new();
+    while let Some(line_end) = rest.windows(2).position(|window| window == b"\r\n") {
+        let size = usize::from_str_radix(String::from_utf8_lossy(&rest[..line_end]).trim(), 16)
+            .context("bad chunk size from the agent")?;
+        let start = line_end + 2;
+        if size == 0 || rest.len() < start + size {
+            break;
+        }
+        body.extend_from_slice(&rest[start..start + size]);
+        rest = rest.get(start + size + 2..).unwrap_or_default();
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// Status code of a plain HTTP GET, or `None` if the request failed.
 fn http_status(address: IpAddr, port: u16, path: &str) -> Option<u16> {
     let timeout = Duration::from_secs(2);
@@ -378,5 +441,21 @@ async fn wait_for_stop(cx: &App<'_>, name: &str) -> &'static str {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_responses_are_read_plain_and_chunked() {
+        let plain = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+        assert_eq!(parse_api_response(plain).unwrap(), "{}");
+        // The second chunk starts in the middle of a two-byte character.
+        let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{\"\xc3\r\n3\r\n\xa4\"}\r\n0\r\n\r\n";
+        assert_eq!(parse_api_response(chunked).unwrap(), "{\"\u{e4}\"}");
+        assert!(parse_api_response(b"HTTP/1.1 401 Unauthorized\r\n\r\n").is_err());
+        assert!(parse_api_response(b"garbage").is_err());
     }
 }

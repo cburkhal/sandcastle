@@ -168,7 +168,7 @@ async fn stop_box(inner: Shared<'_>, name: String) -> Result<(), String> {
 async fn open_chat(inner: Shared<'_>, name: String) -> Result<(), String> {
     let boxes = inner.boxes.lock().await;
     let running = boxes.get(&name).ok_or("this box is not running")?;
-    let url = running.login_url().map_err(text)?;
+    let url = running.login_url(&inner.cx()).map_err(text)?;
     // `open` is the macOS way to hand a URL to the default browser.
     let opened = std::process::Command::new("open").arg(&url).status().map_err(|error| error.to_string())?;
     if !opened.success() {

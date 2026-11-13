@@ -110,7 +110,8 @@ status() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@"; }
 step "UI gateway"
 expect_text "no cookie: refused" 401 "$(status "$UI/")"
 expect_text "login link with a foreign Host: refused" 403 "$(status -H "Host: evil.example:$UI_PORT" "$LINK")"
-status -c "$JAR" "$LINK" >/dev/null
+LANDING="$(curl -s -o /dev/null -c "$JAR" -w '%{redirect_url}' --max-time 10 "$LINK")"
+expect_text "login lands in a chat session" "/session/ses_" "$LANDING"
 expect_ok "login link sets the session cookie" grep -q sandcastle_session "$JAR"
 expect_text "login link works only once" 403 "$(status "$LINK")"
 expect_text "with the cookie: UI answers" 200 "$(status -b "$JAR" "$UI/")"
