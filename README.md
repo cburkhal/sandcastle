@@ -169,7 +169,7 @@ packaging/bundle.sh                       # build sandcastle.app with the CLI in
 - Unlocking asks for the Bitwarden master password in the app's own field, because the Bitwarden CLI can only prompt on a terminal. The app hands it to `bw unlock` once and does not keep it. The Bitwarden CLI must already be logged in (`bw login`, or the API key in the Keychain).
 - `sudo` asks through Touch ID if you enabled it, otherwise through a macOS password dialog.
 - The chat opens in your default browser, as with the CLI.
-- `packaging/bundle.sh` needs the Tauri bundler: `cargo install tauri-cli --version "^2" --locked`. Until the release is signed with a Developer ID, the built app is unsigned: open it with right-click > Open.
+- `packaging/bundle.sh` needs the Tauri bundler: `cargo install tauri-cli --version "^2" --locked` (the release workflow downloads the prebuilt binary instead). A local build is signed only when `APPLE_SIGNING_IDENTITY` is set (see `packaging/RELEASE.md`); otherwise open it with right-click > Open.
 - Planned install of the app, once signed releases exist: `brew install --cask cburkhal/tap/sandcastle` (template in `packaging/homebrew/`).
 
 ### Getting the agent's work

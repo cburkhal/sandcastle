@@ -14,7 +14,6 @@ cask "sandcastle" do
   desc "One OpenCode instance per Git repo, each in its own Apple container VM"
   homepage "https://github.com/cburkhal/sandcastle"
 
-  conflicts_with formula: "sandcastle"
   depends_on arch: :arm64
   depends_on formula: "bitwarden-cli"
   depends_on macos: :tahoe
@@ -31,6 +30,8 @@ cask "sandcastle" do
     sandcastle also needs Apple's `container`, which is not in Homebrew:
       https://github.com/apple/container/releases
     Then run `sandcastle init` once and `sandcastle doctor` to check the setup.
+    Do not also install the formula cburkhal/tap/sandcastle: both provide the
+    `sandcastle` command.
     `brew uninstall` leaves the box image, networks and volumes in `container`,
     and the line `anchor "sandcastle/*"` in /etc/pf.conf.
   EOS
