@@ -215,6 +215,7 @@ box bash -c 'cd /workspace/repo && echo more >more.txt && git add more.txt && gi
 OUT="$(box_push agent-work)"
 expect_text "off: the push is refused" "Publishing is off" "$OUT"
 expect_text "off: nothing is queued" "has not asked" "$(sc push)"
+expect_text "off: the refused branch is recorded for the owner" "agent-work" "$(cat "$HOME/Library/Application Support/sandcastle/boxes/$BOX/push-refused.json" 2>&1)"
 
 sc push-mode always >/dev/null
 OUT="$(box_push agent-work)"

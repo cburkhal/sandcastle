@@ -25,6 +25,24 @@ pub struct Session {
     firewall: Option<Mutex<Firewall>>,
 }
 
+/// What opening a session is waiting for, for a front end that shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// `sudo` for the firewall helper: Touch ID or the login password.
+    Sudo,
+    /// The secret store: unlock it and read every secret.
+    Secrets,
+}
+
+impl Step {
+    pub fn text(self) -> &'static str {
+        match self {
+            Step::Sudo => "Waiting for Touch ID or your macOS login password (sudo, for the firewall rules).",
+            Step::Secrets => "Unlocking the vault and reading the secrets.",
+        }
+    }
+}
+
 /// Whether opening a session will need the store's master password, so a
 /// front end with its own dialog knows whether to ask for it.
 pub fn needs_store_password(cx: &App, store: &dyn SecretStore) -> Result<bool> {
@@ -37,7 +55,7 @@ impl Session {
     /// The only code that may prompt. `sudo` comes first, then the store.
     /// `progress` is told what is being waited for, for a front end that
     /// shows it; the terminal prompts explain themselves.
-    pub fn open(cx: &App, store: &mut dyn SecretStore, sudo: Option<Prompt>, progress: &dyn Fn(&str)) -> Result<Self> {
+    pub fn open(cx: &App, store: &mut dyn SecretStore, sudo: Option<Prompt>, progress: &dyn Fn(Step)) -> Result<Self> {
         let config = config::load(cx.home)?;
         let llm = config.llm.as_ref().ok_or_else(|| {
             anyhow!("no LLM gateway configured: add [llm] base_url to {}", config::path(cx.home).display())
@@ -48,7 +66,7 @@ impl Session {
                 if !firewall::anchor_configured()? {
                     bail!("{} lacks sandcastle's anchor line; run `sandcastle init`", firewall::PF_CONF);
                 }
-                progress("Waiting for Touch ID or your macOS login password (sudo, for the firewall rules).");
+                progress(Step::Sudo);
                 let mut firewall = Firewall::start(prompt)?;
                 // Boxes an earlier, crashed run left blocked: once a box is
                 // gone its rules can go. A box that still runs stays blocked.
@@ -62,7 +80,7 @@ impl Session {
             None => None,
         };
 
-        progress("Unlocking the vault and reading the secrets.");
+        progress(Step::Secrets);
         let mut resolver = Resolver::new(store);
         let llm_base_url = resolver.plain_or_reference(&llm.base_url, "the LLM gateway URL")?;
         let llm_key = resolver.secret(&llm.api_key, "the LLM key")?;

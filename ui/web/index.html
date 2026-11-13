@@ -9,7 +9,7 @@
 <body>
 <nav aria-label="Boxes">
   <div class="brand">
-    <span>sandcastle</span>
+    <span class="name">sandcastle <span id="version" class="label"></span></span>
     <button id="add" class="icon" aria-label="Add a folder" disabled>+</button>
   </div>
   <p class="label">Boxes</p>
@@ -41,6 +41,11 @@
   <form id="unlock" hidden>
     <h1>Unlock sandcastle</h1>
     <p>sandcastle asks once for what it needs. After that, boxes start and stop without prompts until you lock or quit.</p>
+    <ol id="steps" hidden>
+      <li id="step-1"><span class="mark" aria-hidden="true"></span><span>Apple container is running</span></li>
+      <li id="step-2"><span class="mark" aria-hidden="true"></span><span><strong>Firewall: Touch ID or macOS password</strong><span class="hint">A box may reach only sandcastle's relay on this Mac.</span></span></li>
+      <li id="step-3"><span class="mark" aria-hidden="true"></span><span>Vault: read the LLM key</span></li>
+    </ol>
     <div id="password-row">
       <label for="password">Bitwarden master password</label>
       <input id="password" type="password" autocomplete="off" aria-describedby="password-problem">
@@ -62,36 +67,50 @@
         <button id="chat" class="primary">Open chat</button>
       </div>
     </header>
+    <section id="waiting" class="waiting" hidden>
+      <div>
+        <h2>Waiting for you</h2>
+        <p>The agent asks to publish these branches. Nothing leaves this Mac until you publish.</p>
+      </div>
+      <ul id="requests"></ul>
+    </section>
+
     <section>
       <div class="row">
-        <h2>Agent's work</h2>
+        <div>
+          <h2>Agent's work</h2>
+          <p class="hint">Fetching never checks out or merges. Review like a pull request from a stranger: <span class="mono">git log -p HEAD..sandcastle/&lt;branch&gt;</span></p>
+        </div>
         <button id="fetch">Fetch commits</button>
       </div>
       <ul id="branches"></ul>
-      <p class="hint">Fetching never checks out or merges. Review like a pull request from a stranger: <span class="mono">git log -p HEAD..sandcastle/&lt;branch&gt;</span></p>
     </section>
-    <section>
-      <h2>Publishing</h2>
-      <p class="hint">When the agent runs <span class="mono">git push</span>, this Mac can publish the branch for it, as <span class="mono">sandcastle/&lt;branch&gt;</span> on your remote and with your own Git setup. The box never gets credentials and cannot touch your other branches.</p>
-      <fieldset id="push-mode">
-        <legend>When the agent pushes</legend>
-        <label><input type="radio" name="push-mode" value="ask"> <span><strong>Ask me</strong>: the branch waits here until you publish or drop it.</span></label>
-        <label><input type="radio" name="push-mode" value="always"> <span><strong>Publish at once</strong>: no review. Changes to CI configuration still wait for you.</span></label>
-        <label><input type="radio" name="push-mode" value="off"> <span><strong>Never</strong>: pushes are refused. You take commits with Fetch.</span></label>
-      </fieldset>
+
+    <section class="settings">
+      <p class="label">Settings</p>
+      <h2 id="push-mode-title">When the agent pushes</h2>
+      <div id="push-mode" class="segments" role="group" aria-labelledby="push-mode-title">
+        <button data-mode="ask" aria-pressed="false">Ask me</button>
+        <button data-mode="always" aria-pressed="false">Publish at once</button>
+        <button data-mode="off" aria-pressed="false">Never</button>
+      </div>
+      <p id="push-mode-text" class="hint"></p>
       <p id="push-warning" class="problem" hidden>Without review, CI that runs on pushes runs the agent's code with the secrets its workflows have.</p>
-      <ul id="requests"></ul>
-      <pre id="review" hidden></pre>
     </section>
-    <section>
-      <h2>Delete this box</h2>
-      <p class="hint">Deletes what is inside the box: the agent's clone, its chat sessions and its caches. Your folder on this Mac is not touched.</p>
-      <div><button id="delete">Delete box…</button></div>
-      <div id="confirm-delete" class="confirm" role="group" aria-labelledby="confirm-title" hidden>
-        <p id="confirm-title"></p>
-        <p>Commits the agent made that you have not fetched are lost. This cannot be undone.</p>
+
+    <section id="danger" class="danger">
+      <div id="delete-rest" class="row">
+        <div>
+          <h2>Delete this box</h2>
+          <p class="hint">Deletes the agent's clone, chat sessions and caches. Your folder on this Mac is not touched.</p>
+        </div>
+        <button id="delete">Delete box…</button>
+      </div>
+      <div id="confirm-delete" role="group" aria-labelledby="confirm-title" hidden>
+        <h2 id="confirm-title"></h2>
+        <p>The agent's clone, chat sessions and caches are deleted. Commits you have not fetched are lost. This cannot be undone. Your folder on this Mac is not touched.</p>
         <div class="actions">
-          <button id="delete-yes" class="danger">Delete box</button>
+          <button id="delete-yes">Delete box</button>
           <button id="delete-no">Cancel</button>
         </div>
       </div>
