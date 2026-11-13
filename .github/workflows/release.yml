@@ -1,0 +1,50 @@
+# Builds, signs and notarizes sandcastle.app for a version tag and attaches
+# the .dmg to the GitHub release. Not run yet: it needs the secrets below,
+# which exist once the Apple Developer ID is set up.
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   APPLE_CERTIFICATE            the "Developer ID Application" certificate as base64 of the .p12
+#   APPLE_CERTIFICATE_PASSWORD   the password of that .p12
+#   APPLE_SIGNING_IDENTITY       "Developer ID Application: <name> (<team id>)"
+#   APPLE_ID                     the Apple ID used for notarization
+#   APPLE_PASSWORD               an app-specific password for that Apple ID
+#   APPLE_TEAM_ID                the team id
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  app:
+    runs-on: macos-latest
+    steps:
+      # renovate: datasource=github-tags depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unit tests
+        run: cargo test --locked --workspace
+      - name: Install the Tauri bundler
+        # renovate: datasource=crate depName=tauri-cli
+        run: cargo install tauri-cli --version "2.12.4" --locked
+      - name: Build, sign and notarize
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: packaging/bundle.sh
+      - name: Attach the .dmg to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dmg="$(ls target/release/bundle/dmg/*.dmg)"
+          gh release create "$GITHUB_REF_NAME" --generate-notes || true
+          gh release upload "$GITHUB_REF_NAME" "$dmg" --clobber
+          echo "For the Homebrew cask:"
+          echo "  version ${GITHUB_REF_NAME#v}"
+          echo "  sha256  $(shasum -a 256 "$dmg" | awk '{print $1}')"

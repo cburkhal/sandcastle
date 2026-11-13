@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "sandcastle",
+  "version": "0.1.0",
+  "identifier": "io.github.cburkhal.sandcastle",
+  "build": {
+    "frontendDist": "web"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "sandcastle",
+        "width": 1080,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "26.0"
+    }
+  },
+  "mainBinaryName": "sandcastle-ui"
+}

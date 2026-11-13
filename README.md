@@ -149,6 +149,21 @@ sandcastle reset                      # delete the box with its network and volu
 sandcastle doctor                     # check config, image and the pf anchor line
 ```
 
+### The app (early)
+
+A window on top of the same code as the CLI: unlock once, then start, stop, open the chat and fetch for any number of repositories. Quitting or "Lock and stop all" stops every box, drops the secrets and removes the firewall rules.
+
+```
+cargo run -p sandcastle-ui                # run it from the source tree
+packaging/bundle.sh                       # build sandcastle.app with the CLI inside
+```
+
+- Unlocking asks for the Bitwarden master password in the app's own field, because the Bitwarden CLI can only prompt on a terminal. The app hands it to `bw unlock` once and does not keep it. The Bitwarden CLI must already be logged in (`bw login`, or the API key in the Keychain).
+- `sudo` asks through Touch ID if you enabled it, otherwise through a macOS password dialog.
+- The chat opens in your default browser, as with the CLI.
+- `packaging/bundle.sh` needs the Tauri bundler: `cargo install tauri-cli --version "^2" --locked`. Until the release is signed with a Developer ID, the built app is unsigned: open it with right-click > Open.
+- Planned install, once signed releases exist: `brew install --cask cburkhal/tap/sandcastle` (template in `packaging/homebrew/`).
+
 ### Getting the agent's work
 
 The agent never writes to your repo. It works on its own clone inside the box, made from your repo's committed history; untracked files such as `.env` stay on your Mac. While the box is running, from another terminal in the repo:

@@ -211,6 +211,11 @@ sandcastle/
   src/runtime/apple_container.rs
   spike/                            shell scripts + notes for the manual spike (step 1)
   e2e/                              end-to-end check of the real binary, with a fake gateway
+  src/lib.rs                        the library; src/main.rs is the CLI on top of it
+  src/core/session.rs               a session: secrets and the root helper, obtained once
+  ui/                               the app (Tauri 2): Rust commands in src/, the window in web/
+  packaging/                        bundle script, Homebrew cask template
+  .github/workflows/release.yml     signed release build (not run yet)
 ```
 
 ### Example config (`~/.config/sandcastle/config.toml`, no secret values)
@@ -351,6 +356,11 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Only the gateway's models are offered (`enabled_providers`) (2026-11-13) | OpenCode's built-in free models cannot work in the box and one was the default |
 | sandcastle starts the `container` service itself (2026-11-13) | `init` and `up` failed after a reboot |
 | v0.1 is released by a PR from `spike` to `main` (2026-11-13) | Owner request |
+| No secrets agent and no Keychain cache for the CLI (2026-11-13) | One prompt per `up` is good enough; the app is the long-lived session instead |
+| App with Tauri 2, chat stays in the browser (2026-11-13) | The app stays Rust and reuses the library; no web view that shows agent output |
+| App collects the Bitwarden master password in its own field and passes it to `bw unlock --passwordenv` | `bw` can only prompt on a terminal. Cost: the password passes through sandcastle's memory once |
+| App asks for `sudo` with `sudo -A` and an askpass dialog; Touch ID still comes first | Reuses the existing root helper unchanged. A registered privileged helper needs the Developer ID and comes with signing |
+| Distribution: signed app as a Homebrew cask in a tap, CLI inside the app bundle | One install for both; owner is setting up a Developer ID |
 
 ---
 
@@ -390,6 +400,8 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 3. **Secrets phase and pf. Done 2026-11-12.** The owner ran `init` and `up` with the real vault, root and the real gateway: both prompts appeared and the browser opened on the OpenCode UI. A chat message was answered through the real gateway (owner, 2026-11-13). Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
 4. **Git and release. `fetch` done 2026-11-12, end-to-end check and release 2026-11-13.** Verified in a throwaway repo: first `up` clones into the box without untracked files; a commit made in the box arrives under `sandcastle/<branch>`; a hook and `core.fsmonitor` planted in the box do not reach the host repo; the host working tree is untouched; a later `up` keeps the clone and sees new host commits as `origin/*`; a repo with a credential in a remote URL is refused. The end-to-end check is `e2e/run.sh` (see `README.md`): it drives the real binary with its own home folder, a fake gateway and an `env://` key. Run it before every release and after every `container` or OpenCode update.
 
+**The app (branch `ui`, started 2026-11-13):** see 12.
+
 **After v0.1:**
 - v0.2: `log`, `doctor`; model list from the gateway's `/v1/models`; image rebuild with digest pinning.
 - v0.3: optional relay-injected secrets (Brave Search, GitHub token if Q2 = yes).
@@ -420,3 +432,21 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 - The relay is security-critical: keep it small, test it (allowlist matching, Host/Origin checks, key never logged, key never in error messages).
 - Never log secret values. Redact `Authorization` headers in relay logs.
 - Owner preferences: concise, direct, flag tradeoffs explicitly, challenge decisions that look wrong instead of implementing them politely, ask clarifying questions inline. No em dashes in prose.
+
+---
+
+## 12. The app
+
+A second front end in `ui/` (Tauri 2), on the same library as the CLI. UI draft: https://claude.ai/artifact/GSFfGeBAmegXVPHKsgUD8Z
+
+- **Session model:** the app is one session (`src/core/session.rs`). Unlock runs the secrets phase once: `sudo` for one root helper that serves all boxes, then the vault. Boxes start and stop inside the session (`up::plan`, `up::start`, `RunningBox::stop`). Lock or quit stops every box and drops the session, which drops the secrets and makes the helper remove all rules. The CLI uses the same code with one session per `up`.
+- **Window:** static HTML, CSS and JS in `ui/web/`, no bundler and no npm dependencies. Strict CSP, no remote content, no inline script. Its only powers are the commands in `ui/src/main.rs` and the folder picker (`ui/capabilities/default.json`). Text from the system is set as text, never as HTML.
+- **Chat:** opened in the default browser through a fresh one-time link (`UiGateway::new_login_url`), which replaces any unused earlier link.
+- **Testing without root:** `sandcastle-ui --no-firewall`, same meaning and warning as the CLI flag.
+- **Packaging:** `packaging/bundle.sh` builds `sandcastle.app` with the CLI at `Contents/MacOS/sandcastle`. The release workflow signs and notarizes when the Apple secrets exist. The cask template is `packaging/homebrew/sandcastle.rb`; the tap repository does not exist yet.
+
+Verified 2026-11-13: the library refactor passes the unit tests and `e2e/run.sh`; the firewall helper's multi-box protocol passes a test with a fake `pfctl`; the app builds, starts and bundles (unsigned). **Not verified:** anything that needs a click (unlock, start, stop, chat, fetch in the window), the askpass dialog, the multi-box helper with real `pfctl`, the release workflow, the cask.
+
+Not built yet: menu bar item, network view (allowed and refused hosts), unfetched-commit counts, diff review, notifications, `init` and `doctor` in the app, reset.
+
+**Known gap (CLI and app):** if sandcastle crashes, the root helper removes the firewall rules while the box may still be running. The box then has no relay and no internet, but it can reach services on the Mac that listen on all addresses until the next `up` or `down`. Options: the helper leaves block-all rules for that box on an unexpected close, or it stops the box itself. Not decided.

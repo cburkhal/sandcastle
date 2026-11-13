@@ -107,6 +107,24 @@ pub fn seed(cx: &App, box_name: &str) -> Result<()> {
 /// `sandcastle fetch`: bring the box's commits into the host repo under
 /// `refs/remotes/sandcastle/*`. Nothing is checked out or merged.
 pub fn fetch(cx: &App, path: &Path) -> Result<()> {
+    let listing = fetch_refs(cx, path)?;
+    if listing.is_empty() {
+        println!("The box has no branches yet.");
+        return Ok(());
+    }
+    println!("Branches from the box, now in this repo:");
+    for line in &listing {
+        println!("  {line}");
+    }
+    println!("Nothing was checked out or merged. Treat these like a pull request from a stranger:");
+    println!("  git log -p HEAD..{REMOTE}/<branch>     review");
+    println!("  git merge {REMOTE}/<branch>            take the changes");
+    Ok(())
+}
+
+/// The fetch itself. Returns one line per branch of the box:
+/// `sandcastle/<branch>  <commit>  <subject>`.
+pub fn fetch_refs(cx: &App, path: &Path) -> Result<Vec<String>> {
     let repo = state::repo_root(path)?;
     let name = state::box_name(&repo);
     if cx.runtime.inspect(&name)?.state != BoxState::Running {
@@ -139,19 +157,7 @@ pub fn fetch(cx: &App, path: &Path) -> Result<()> {
         .args(["for-each-ref", "--format=%(refname:short)  %(objectname:short)  %(subject)"])
         .arg(format!("refs/remotes/{REMOTE}/"))
         .output()?;
-    let listing = String::from_utf8_lossy(&branches.stdout);
-    if listing.trim().is_empty() {
-        println!("The box has no branches yet.");
-        return Ok(());
-    }
-    println!("Branches from the box, now in this repo:");
-    for line in listing.lines() {
-        println!("  {line}");
-    }
-    println!("Nothing was checked out or merged. Treat these like a pull request from a stranger:");
-    println!("  git log -p HEAD..{REMOTE}/<branch>     review");
-    println!("  git merge {REMOTE}/<branch>            take the changes");
-    Ok(())
+    Ok(String::from_utf8_lossy(&branches.stdout).lines().map(str::to_string).collect())
 }
 
 #[cfg(test)]

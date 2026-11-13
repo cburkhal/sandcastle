@@ -24,6 +24,14 @@ pub struct Session {
     firewall: Option<Mutex<Firewall>>,
 }
 
+/// Whether opening a session will need the store's master password, so a
+/// front end with its own dialog knows whether to ask for it.
+pub fn needs_store_password(cx: &App, store: &dyn SecretStore) -> Result<bool> {
+    let config = config::load(cx.home)?;
+    let prefix = format!("{}://", store.scheme());
+    Ok(config.llm.is_some_and(|llm| llm.base_url.starts_with(&prefix) || llm.api_key.starts_with(&prefix)))
+}
+
 impl Session {
     /// The only code that may prompt. `sudo` comes first, then the store.
     pub fn open(cx: &App, store: &mut dyn SecretStore, sudo: Option<Prompt>) -> Result<Self> {

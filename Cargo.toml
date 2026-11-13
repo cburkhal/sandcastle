@@ -6,6 +6,10 @@ description = "One OpenCode instance per Git repo, each in its own Apple contain
 license = "MIT"
 publish = false
 
+[workspace]
+members = [".", "ui"]
+default-members = ["."]
+
 [dependencies]
 anyhow = "1"
 bytes = "1"
