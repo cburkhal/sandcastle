@@ -22,29 +22,44 @@
   </section>
 </nav>
 <main>
-  <p id="error" role="alert" hidden></p>
+  <div id="error" role="alert" hidden>
+    <div>
+      <p id="error-title"></p>
+      <p id="error-detail"></p>
+    </div>
+    <button id="error-close">Dismiss</button>
+  </div>
+  <ul id="notices" role="status"></ul>
+  <p id="busy" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-text"></span></p>
+
+  <section id="setup" hidden>
+    <h1>Setup needed</h1>
+    <p>sandcastle cannot unlock yet. This window updates itself once these are fixed:</p>
+    <ul id="problems"></ul>
+  </section>
 
   <form id="unlock" hidden>
     <h1>Unlock sandcastle</h1>
     <p>sandcastle asks once for what it needs. After that, boxes start and stop without prompts until you lock or quit.</p>
     <div id="password-row">
       <label for="password">Bitwarden master password</label>
-      <input id="password" type="password" autocomplete="off">
+      <input id="password" type="password" autocomplete="off" aria-describedby="password-problem">
+      <p id="password-problem" class="problem" hidden>Enter the Bitwarden master password.</p>
       <p class="hint">Needed to read the LLM key. It is handed to the Bitwarden CLI once and not kept.</p>
     </div>
-    <p id="sudo-hint" class="hint">Next, macOS asks for Touch ID or your login password (sudo), to load firewall rules: a box may reach only sandcastle's relay on this Mac.</p>
-    <button class="primary" type="submit">Unlock</button>
+    <p id="sudo-hint" class="hint">After you press Unlock, macOS asks for Touch ID (sudo). Without Touch ID for sudo, a dialog asks for your macOS login password instead. It is needed to load firewall rules: a box may reach only sandcastle's relay on this Mac.</p>
+    <button id="unlock-button" class="primary" type="submit">Unlock</button>
   </form>
 
   <section id="detail" hidden>
     <header>
       <div>
         <h1 id="box-name"></h1>
+        <p id="box-state" class="hint"></p>
         <p id="box-repo" class="mono"></p>
       </div>
       <div class="actions">
         <button id="chat" class="primary">Open chat</button>
-        <button id="toggle"></button>
       </div>
     </header>
     <section>
@@ -55,10 +70,22 @@
       <ul id="branches"></ul>
       <p class="hint">Fetching never checks out or merges. Review like a pull request from a stranger: <span class="mono">git log -p HEAD..sandcastle/&lt;branch&gt;</span></p>
     </section>
+    <section>
+      <h2>Delete this box</h2>
+      <p class="hint">Deletes what is inside the box: the agent's clone, its chat sessions and its caches. Your folder on this Mac is not touched.</p>
+      <div><button id="delete">Delete box…</button></div>
+      <div id="confirm-delete" class="confirm" role="group" aria-labelledby="confirm-title" hidden>
+        <p id="confirm-title"></p>
+        <p>Commits the agent made that you have not fetched are lost. This cannot be undone.</p>
+        <div class="actions">
+          <button id="delete-yes" class="danger">Delete box</button>
+          <button id="delete-no">Cancel</button>
+        </div>
+      </div>
+    </section>
   </section>
 
   <p id="empty" hidden>No boxes yet. Add a folder with the + button. A Git repository is cloned into its box; any other folder gets an empty box.</p>
-  <p id="busy" role="status" hidden></p>
 </main>
 <script src="app.js"></script>
 </body>

@@ -190,25 +190,61 @@ const HELPER_STATE_DIR: &str = "/var/run";
 pub enum Prompt<'a> {
     /// On the terminal sandcastle runs in.
     Terminal,
-    /// Through this program (`sudo -A`), for apps without a terminal.
+    /// For apps without a terminal: Touch ID if it is set up for sudo,
+    /// otherwise this program asks (`sudo -A`).
     Askpass(&'a std::path::Path),
+}
+
+/// What became of one attempt to start the helper through `sudo`.
+enum Started {
+    Ready(Firewall),
+    /// The helper ran as root and found pf without sandcastle's anchor.
+    NoAnchor,
+    /// `sudo` did not run the helper: no or wrong authentication.
+    Refused,
 }
 
 impl Firewall {
     /// Start the helper. This is where the sudo prompt appears.
     pub fn start(prompt: Prompt) -> Result<Self> {
-        let mut command = sudo(
-            "load firewall (pf) rules for each box, and remove them when it stops",
-            "a box may reach only sandcastle's relay on this Mac, and only this Mac may reach the box",
-        );
-        if let Prompt::Askpass(program) = prompt {
-            command.arg("-A").env("SUDO_ASKPASS", program);
+        let command = || {
+            let mut command = sudo(
+                "load firewall (pf) rules for each box, and remove them when it stops",
+                "a box may reach only sandcastle's relay on this Mac, and only this Mac may reach the box",
+            );
+            command.args(["/bin/sh", "-c", HELPER, "sandcastle-firewall", HELPER_STATE_DIR]);
+            command
+        };
+        let started = match prompt {
+            Prompt::Terminal => Self::spawn(command())?,
+            Prompt::Askpass(program) => {
+                // `sudo -A` goes straight to the askpass program and never
+                // offers Touch ID (checked on macOS 27, 2026-11-13). Plain
+                // `sudo` offers it even without a terminal, and fails at once
+                // when Touch ID is not set up for sudo or is cancelled. So:
+                // Touch ID first, the password dialog second.
+                let mut plain = command();
+                plain.stderr(Stdio::null());
+                match Self::spawn(plain)? {
+                    Started::Refused => {
+                        let mut dialog = command();
+                        dialog.arg("-A").env("SUDO_ASKPASS", program);
+                        Self::spawn(dialog)?
+                    }
+                    other => other,
+                }
+            }
+        };
+        match started {
+            Started::Ready(firewall) => Ok(firewall),
+            Started::NoAnchor => bail!(
+                "pf does not have sandcastle's anchor loaded. Run `sandcastle init` (a macOS update may have reset {PF_CONF})"
+            ),
+            Started::Refused => bail!("sudo did not start the firewall helper (wrong password, cancelled, or no admin rights?)"),
         }
-        command.args(["/bin/sh", "-c", HELPER, "sandcastle-firewall", HELPER_STATE_DIR]);
-        Self::spawn(command)
     }
 
-    fn spawn(mut command: Command) -> Result<Self> {
+    fn spawn(mut command: Command) -> Result<Started> {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -219,11 +255,13 @@ impl Firewall {
         let mut line = String::new();
         output.read_line(&mut line)?;
         match line.trim() {
-            "ready" => Ok(Firewall { child, input, output }),
-            "no-anchor" => bail!(
-                "pf does not have sandcastle's anchor loaded. Run `sandcastle init` (a macOS update may have reset {PF_CONF})"
-            ),
-            _ => bail!("sudo did not start the firewall helper (wrong password, or no admin rights?)"),
+            "ready" => Ok(Started::Ready(Firewall { child, input, output })),
+            other => {
+                let no_anchor = other == "no-anchor";
+                drop(input);
+                let _ = child.wait();
+                Ok(if no_anchor { Started::NoAnchor } else { Started::Refused })
+            }
         }
     }
 
@@ -323,7 +361,10 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", HELPER, "sandcastle-firewall"]).arg(dir);
         command.env("PATH", format!("{}:/usr/bin:/bin", dir.display()));
-        Firewall::spawn(command).unwrap()
+        match Firewall::spawn(command).unwrap() {
+            Started::Ready(firewall) => firewall,
+            _ => panic!("the fake helper did not start"),
+        }
     }
 
     fn calls(dir: &std::path::Path) -> Vec<String> {

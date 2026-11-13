@@ -27,14 +27,17 @@ nav {
 .brand { display: flex; align-items: center; justify-content: space-between; padding: 0 8px; font-weight: 600; font-size: 15px; }
 nav .label { padding: 0 8px; }
 #boxes { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-#boxes button {
-  display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 6px 8px; border: 0;
+#boxes .box { display: flex; align-items: center; gap: 4px; border-radius: 8px; }
+#boxes .box[aria-current="true"] { background: var(--selected); }
+#boxes .select {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 6px 8px; border: 0;
   background: transparent; text-align: left;
 }
-#boxes button[aria-current="true"] { background: var(--selected); }
+#boxes .select > span:last-child { min-width: 0; }
+#boxes .toggle { flex: none; min-height: 36px; min-width: 60px; padding: 0 10px; margin-right: 6px; font-size: 13px; }
 #boxes .dot { width: 10px; height: 10px; flex: none; border-radius: 50%; border: 1px solid var(--muted); }
 #boxes .running .dot { background: var(--accent); border-color: var(--accent); }
-#boxes .name { display: block; font-weight: 500; }
+#boxes .name { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #boxes .state { display: block; font-size: 12px; color: var(--muted); }
 .session {
   margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px;
@@ -65,5 +68,33 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 #branches:empty { display: none; }
 #branches li { padding: 10px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
 #branches li + li { border-top: 1px solid var(--line); }
-#error { padding: 10px 14px; border-radius: 8px; background: var(--error-ground); color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
-#busy { color: var(--muted); }
+#error, #notices li {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 12px 14px; border-radius: 8px;
+}
+#error { background: var(--error-ground); color: var(--error); }
+#error-title { font-weight: 600; }
+#error-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+#error button, #notices button { flex: none; min-height: 32px; padding: 0 12px; font-size: 13px; }
+#notices { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+#notices:empty { display: none; }
+#notices li { background: var(--panel); border: 1px solid var(--line); overflow-wrap: anywhere; }
+#busy {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 8px;
+  background: var(--selected); font-weight: 500;
+}
+.spinner {
+  width: 18px; height: 18px; flex: none; border-radius: 50%;
+  border: 2px solid var(--accent); border-right-color: transparent; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 4s; } }
+#setup { display: flex; flex-direction: column; gap: 12px; max-width: 560px; }
+#problems { display: flex; flex-direction: column; gap: 8px; padding-left: 20px; overflow-wrap: anywhere; }
+.problem { font-size: 12px; color: var(--error); }
+.confirm {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 8px;
+  border: 1px solid var(--error); max-width: 620px;
+}
+#confirm-title { font-weight: 600; overflow-wrap: anywhere; }
+button.danger { background: var(--error); border-color: var(--error); color: var(--ground); font-weight: 600; }

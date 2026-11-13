@@ -250,7 +250,7 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
         eprintln!("WARNING: --no-firewall: the box can reach other services on this Mac, and");
         eprintln!("         devices on your network may be able to reach the box.");
     }
-    let session = Session::open(cx, store, options.firewall.then_some(Prompt::Terminal))?;
+    let session = Session::open(cx, store, options.firewall.then_some(Prompt::Terminal), &|_| {})?;
     let running = start(cx, &session, plan).await?;
 
     let login_url = running.login_url(cx)?;

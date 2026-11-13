@@ -14,9 +14,10 @@ cask "sandcastle" do
   desc "One OpenCode instance per Git repo, each in its own Apple container VM"
   homepage "https://github.com/cburkhal/sandcastle"
 
+  conflicts_with formula: "sandcastle"
   depends_on arch: :arm64
-  depends_on macos: ">= :tahoe"
   depends_on formula: "bitwarden-cli"
+  depends_on macos: :tahoe
 
   app "sandcastle.app"
   binary "#{appdir}/sandcastle.app/Contents/MacOS/sandcastle"
