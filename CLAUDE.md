@@ -130,7 +130,7 @@ Why the login stays (even though "all is local"): an unauthenticated OpenCode se
 
 Rule set by the owner (2026-11-12): **all secrets are obtained at the start of the session, then everything runs unattended.** `up` begins with one secrets phase: Bitwarden login if needed, one vault unlock (master password), and resolving every secret reference the session will need, including any added later (for example a GitHub token). Nothing may prompt after that phase. One master password prompt per `up` is accepted. The same applies to other credentials `up` needs, such as `sudo` for the pf rule.
 
-Every prompt must say which password it wants and why (owner request, 2026-11-12): the Bitwarden master password and the macOS login password for `sudo` look alike on a bare prompt. sandcastle prints one line before each, for example "Bitwarden master password (to read the LLM key)" and "macOS login password (sudo, to load the firewall rules for this box)", and passes its own prompt text to `sudo -p`.
+Every prompt must say which password it wants and why (owner request, 2026-11-12): the Bitwarden master password and the macOS login password for `sudo` look alike on a bare prompt. sandcastle prints what it is needed for and one line on why (for `sudo`: what the firewall rules allow and block) before each, for example "Bitwarden master password (to read the LLM key)" and "macOS login password (sudo, to load the firewall rules for this box)", and passes its own prompt text to `sudo -p`.
 
 The LiteLLM virtual key must carry a monthly budget, a model allowlist and an expiry, so even a leak is cheap. The user confirmed LiteLLM supports per-user virtual keys.
 
@@ -367,7 +367,7 @@ Do not silently decide these. Ask the owner, or implement the proposal and flag 
 
 ## 9. Current status and next steps
 
-**Status:** v0.1. Design verified by the shell spike; build steps 1 to 4 are written and run; `e2e/run.sh` passes without the firewall (2026-11-13). Its `--firewall` mode needs `sudo` and has not been run yet. Work happened on the `spike` branch until v0.1; after that, branch from `main`.
+**Status:** v0.1. Design verified by the shell spike; build steps 1 to 4 are written and run; `e2e/run.sh` passes without the firewall, and the owner ran it with `--firewall` and Touch ID for `sudo` (2026-11-13, reported as passed). Work happened on the `spike` branch until v0.1; after that, branch from `main`.
 
 **Step 1: manual spike. Done on 2026-11-12**, results and evidence in `spike/NOTES.md`. All nine items ran with Apple `container` 1.7.1 and OpenCode 2.2.7:
 

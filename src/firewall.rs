@@ -31,9 +31,10 @@ fn has_anchor_line(pf_conf: &str) -> bool {
     pf_conf.lines().any(|line| line.trim() == ANCHOR_LINE)
 }
 
-fn sudo(reason: &str) -> Command {
+fn sudo(reason: &str, why: &str) -> Command {
     println!("\n>> macOS login password or Touch ID (sudo, admin rights on this Mac)");
     println!("   Needed to: {reason}");
+    println!("   Why: {why}");
     println!("   (No prompt appears if sudo was used in this terminal a moment ago.)");
     let mut command = Command::new("sudo");
     command.args(["-p", "   macOS password for %u: "]);
@@ -58,7 +59,10 @@ if ! pfctl -nf {PF_CONF} 2>/dev/null; then
 fi
 pfctl -f {PF_CONF} 2>/dev/null"#
     );
-    let status = sudo(&format!("add one line to {PF_CONF} and reload it (backup: {PF_CONF}.sandcastle-backup)"))
+    let status = sudo(
+        &format!("add one line to {PF_CONF} and reload it (backup: {PF_CONF}.sandcastle-backup)"),
+        "the line gives sandcastle a place for per-box rules; it allows or blocks nothing by itself",
+    )
         .args(["/bin/sh", "-c", &script])
         .status()?;
     if !status.success() {
@@ -132,7 +136,10 @@ exit 0"#;
 impl Firewall {
     /// Start the helper. This is where the sudo prompt appears.
     pub fn start(box_name: &str) -> Result<Self> {
-        let mut child = sudo("load firewall (pf) rules for this box, and remove them when it stops")
+        let mut child = sudo(
+            "load firewall (pf) rules for this box, and remove them when it stops",
+            "the box may reach only sandcastle's relay on this Mac, and only this Mac may reach the box",
+        )
             .args(["/bin/sh", "-c", HELPER, "sandcastle-firewall"])
             .arg(format!("sandcastle/{box_name}"))
             .stdin(Stdio::piped())
