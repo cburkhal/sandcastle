@@ -24,7 +24,7 @@ impl Secret {
     }
 }
 
-pub trait SecretStore {
+pub trait SecretStore: Send + Sync {
     /// URI scheme of this store's references, for example `bitwarden`.
     fn scheme(&self) -> &'static str;
     /// Make the store readable. This is the only call that may prompt, and it

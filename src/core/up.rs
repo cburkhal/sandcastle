@@ -1,38 +1,38 @@
-//! `sandcastle up`: start a box with its relay and keep both running.
+//! Starting a box with its relay, and `sandcastle up` on top of that.
 //!
 //! Order matters and follows CLAUDE.md section 4:
-//! 1. everything that can fail without a box (config, key, gateway reachable),
+//! 1. everything that can fail without a box (repo, image) and the session,
+//!    which is the only part that may ask for a password,
 //! 2. network and volumes,
 //! 3. the box, whose entrypoint waits for the relay,
-//! 4. the relay's box-side listeners, which can only bind once the box runs,
+//! 4. firewall rules and the relay's box-side listeners, which need the
+//!    running box,
 //! 5. the UI gateway and the one-time login link.
-//!
-//! Everything that can prompt (sudo for the firewall, the secret store's
-//! master password) happens in step 1, the secrets phase. After it, `up` runs
-//! unattended.
 
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 
-use super::config::{self, Config};
+use super::config::Config;
 use super::git;
 use super::lifecycle::{self, App};
+use super::session::Session;
 use super::state::{self, BoxRecord};
-use crate::firewall::{self, Firewall};
+use crate::firewall::{self, Prompt};
 use crate::relay::egress::Egress;
 use crate::relay::llm::LlmRelay;
 use crate::relay::log::Log;
 use crate::relay::ui::UiGateway;
 use crate::relay::{self, http};
 use crate::runtime::{BoxSpec, BoxState, Mount, Network};
-use crate::secrets::{Resolver, SecretStore};
+use crate::secrets::SecretStore;
 
 /// Ports of the relay on the box network's gateway address.
 const LLM_PORT: u16 = 4180;
@@ -44,12 +44,17 @@ pub struct Options {
     pub firewall: bool,
 }
 
-pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options: Options) -> Result<()> {
-    // --- 1. Nothing is created until these all hold. ---
-    let config = config::load(cx.home)?;
-    let llm_config = config.llm.as_ref().ok_or_else(|| {
-        anyhow!("no LLM gateway configured: add [llm] base_url to {}", config::path(cx.home).display())
-    })?;
+/// What is known about a box before anything is created or asked.
+pub struct Plan {
+    repo: PathBuf,
+    source: PathBuf,
+    name: String,
+    image_tag: String,
+    image_digest: String,
+}
+
+/// Check everything that needs neither a password nor a box.
+pub fn plan(cx: &App, path: &Path) -> Result<Plan> {
     let repo = state::repo_root(path)?;
     let source = git::source_dir(&repo)?;
     let name = state::box_name(&repo);
@@ -61,29 +66,52 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
     if cx.runtime.inspect(&name)?.state == BoxState::Running {
         bail!("box {name} is already running; stop it with `sandcastle down`");
     }
+    Ok(Plan { repo, source, name, image_tag: image.tag, image_digest })
+}
 
-    // The secrets phase: the only part of `up` that may ask for a password.
-    let firewall = if options.firewall {
-        if !firewall::anchor_configured()? {
-            bail!("{} lacks sandcastle's anchor line; run `sandcastle init`", firewall::PF_CONF);
+/// A box that is up, with its relay. Stop it with [`RunningBox::stop`].
+pub struct RunningBox {
+    pub name: String,
+    pub repo: PathBuf,
+    pub ui_port: u16,
+    ui: Arc<UiGateway>,
+    llm: Arc<LlmRelay>,
+    log: Log,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl RunningBox {
+    /// A one-time link that logs the browser in. Each call replaces the last
+    /// unused link.
+    pub fn login_url(&self) -> Result<String> {
+        self.ui.new_login_url()
+    }
+
+    pub fn llm_requests(&self) -> u64 {
+        self.llm.request_count()
+    }
+
+    /// Stop the relay and the box, then remove the box's firewall rules.
+    pub fn stop(self, cx: &App, session: &Session) -> Result<()> {
+        self.log.line("up: stopping");
+        for task in &self.tasks {
+            task.abort();
         }
-        Some(Firewall::start(&name)?)
-    } else {
-        eprintln!("WARNING: --no-firewall: the box can reach other services on this Mac, and");
-        eprintln!("         devices on your network may be able to reach the box.");
-        None
-    };
-    let mut resolver = Resolver::new(store);
-    let base_url = resolver.plain_or_reference(&llm_config.base_url, "the LLM gateway URL")?;
-    let key = resolver.secret(&llm_config.api_key, "the LLM key")?;
+        let stopped = lifecycle::stop(cx, &self.name);
+        // The rules go only after the box is gone.
+        stopped.and(session.firewall_unload(&self.name))
+    }
+}
 
+/// Start the box for `plan` in `session`. Prompts for nothing.
+pub async fn start(cx: &App<'_>, session: &Session, plan: Plan) -> Result<RunningBox> {
+    let Plan { repo, source, name, image_tag, image_digest } = plan;
     let box_dir = state::box_dir(cx.home, &name);
     fs::create_dir_all(box_dir.join("config"))?;
     let log = Log::to_file(&box_dir.join("relay.log"), true)?;
     log.line(&format!("up: starting box {name}"));
 
-    let llm = Arc::new(LlmRelay::new(&base_url, &key, log.clone())?);
-    drop(key);
+    let llm = Arc::new(LlmRelay::new(&session.llm_base_url, &session.llm_key, log.clone())?);
     let models = llm.models().await?;
     println!("LLM gateway reachable, {} models.", models.len());
 
@@ -98,7 +126,7 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
         .network_inspect(&record.network())?
         .ok_or_else(|| anyhow!("network {} vanished right after it was created", record.network()))?;
     let gateway: IpAddr = network.gateway.parse().context("the runtime reported an invalid gateway address")?;
-    lifecycle::prepare_volumes(cx, &record, &image.tag)?;
+    lifecycle::prepare_volumes(cx, &record, &image_tag)?;
 
     let agent_config = cx.agent.config(&format!("http://{gateway}:{LLM_PORT}/v1"), &models);
     fs::write(box_dir.join("config").join(agent_config.name), agent_config.content)?;
@@ -109,37 +137,43 @@ pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options
 
     // --- 3. The box. From here on, failures must remove it again. ---
     let password = relay::random_token(32)?;
-    let spec = box_spec(cx, &config, &record, &image.tag, &box_dir.join("config"), &source, gateway, &password);
+    let spec =
+        box_spec(cx, &session.config, &record, &image_tag, &box_dir.join("config"), &source, gateway, &password);
     cx.runtime.run(&spec)?;
 
-    let mut firewall = firewall;
-    let result = serve(
-        cx, &record, gateway, &network.subnet, llm, &config, log.clone(), ui_listener, ui_port, &password,
-        firewall.as_mut(), options.open_browser,
+    let mut tasks = Vec::new();
+    let served = serve(
+        cx, session, &record, gateway, &network.subnet, llm.clone(), log.clone(), ui_listener, ui_port, &password,
+        &mut tasks,
     )
     .await;
-    log.line("up: stopping");
-    let stopped = lifecycle::stop(cx, &name);
-    // The rules go only after the box is gone.
-    drop(firewall);
-    result.and(stopped)
+    match served {
+        Ok(ui) => Ok(RunningBox { name, repo: record.repo, ui_port, ui, llm, log, tasks }),
+        Err(error) => {
+            for task in &tasks {
+                task.abort();
+            }
+            let _ = lifecycle::stop(cx, &name);
+            let _ = session.firewall_unload(&name);
+            Err(error)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn serve(
     cx: &App<'_>,
+    session: &Session,
     record: &BoxRecord,
     gateway: IpAddr,
     subnet: &str,
     llm: Arc<LlmRelay>,
-    config: &Config,
     log: Log,
     ui_listener: TcpListener,
     ui_port: u16,
     password: &str,
-    firewall: Option<&mut Firewall>,
-    open_browser: bool,
-) -> Result<()> {
+    tasks: &mut Vec<JoinHandle<()>>,
+) -> Result<Arc<UiGateway>> {
     let name = &record.name;
     let failed = |error: anyhow::Error| {
         let logs = cx.runtime.logs(name, 20).unwrap_or_default();
@@ -151,9 +185,10 @@ async fn serve(
     let box_ip = box_address(cx, name).await.map_err(failed)?;
     let wait = Duration::from_secs(20);
     let agent_port = cx.agent.ui_port();
-    if let Some(firewall) = firewall {
+    if session.has_firewall() {
         let interface = host_interface(gateway, wait).await?;
-        firewall.load(&firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port))?;
+        session
+            .firewall_load(name, &firewall::rules(&interface, subnet, gateway, &[LLM_PORT, EGRESS_PORT], agent_port))?;
         log.line(&format!("up: firewall rules loaded on {interface}"));
     }
     // The box's clone must exist before the agent starts in it.
@@ -162,10 +197,12 @@ async fn serve(
     let llm_listener = relay::bind_on_gateway(SocketAddr::new(gateway, LLM_PORT), wait).await?;
     let egress_listener = relay::bind_on_gateway(SocketAddr::new(gateway, EGRESS_PORT), wait).await?;
     // Only the box may use them; the host sees the box's own address (spike item 1).
-    let egress = Arc::new(Egress::new(&config.egress.allow, Some(box_ip), log.clone()));
-    tokio::spawn(egress.serve(egress_listener));
+    let egress = Arc::new(Egress::new(&session.config.egress.allow, Some(box_ip), log.clone()));
+    tasks.push(tokio::spawn(egress.serve(egress_listener)));
     let handler = llm.clone();
-    tokio::spawn(http::serve(llm_listener, Some(box_ip), log.clone(), move |request| handler.clone().handle(request)));
+    tasks.push(tokio::spawn(http::serve(llm_listener, Some(box_ip), log.clone(), move |request| {
+        handler.clone().handle(request)
+    })));
 
     // --- 5. The agent starts once the relay answers; then the UI gateway. ---
     wait_until_healthy(cx, name, box_ip, agent_port).await.map_err(failed)?;
@@ -179,23 +216,35 @@ async fn serve(
         relay::random_token(32)?,
         log.clone(),
     ));
-    let login_url = ui.login_url().expect("a new gateway has a login link");
     let handler = ui.clone();
-    tokio::spawn(http::serve(ui_listener, None, log.clone(), move |request| handler.clone().handle(request)));
+    tasks.push(tokio::spawn(http::serve(ui_listener, None, log, move |request| handler.clone().handle(request))));
+    Ok(ui)
+}
 
-    println!("Box {name} is up for {}", record.repo.display());
+/// `sandcastle up`: one session, one box, until Ctrl-C.
+pub async fn run(cx: &App<'_>, store: &mut dyn SecretStore, path: &Path, options: Options) -> Result<()> {
+    let plan = plan(cx, path)?;
+    if !options.firewall {
+        eprintln!("WARNING: --no-firewall: the box can reach other services on this Mac, and");
+        eprintln!("         devices on your network may be able to reach the box.");
+    }
+    let session = Session::open(cx, store, options.firewall.then_some(Prompt::Terminal))?;
+    let running = start(cx, &session, plan).await?;
+
+    let login_url = running.login_url()?;
+    println!("Box {} is up for {}", running.name, running.repo.display());
     println!("  Open this link to chat (it works once): {login_url}");
-    println!("  Allowed hosts: {}", config.egress.allow.join(", "));
+    println!("  Allowed hosts: {}", session.config.egress.allow.join(", "));
     println!("  The agent works on its own clone. `sandcastle fetch` (in another terminal) brings its commits here.");
     println!("Press Ctrl-C to stop the box.");
-    if open_browser {
+    if options.open_browser {
         // `open` is the macOS way to hand a URL to the default browser.
         let _ = std::process::Command::new("open").arg(&login_url).status();
     }
 
-    let reason = wait_for_stop(cx, name).await;
-    println!("\n{reason} The LLM relay forwarded {} requests.", llm.request_count());
-    Ok(())
+    let reason = wait_for_stop(cx, &running.name).await;
+    println!("\n{reason} The LLM relay forwarded {} requests.", running.llm_requests());
+    running.stop(cx, &session)
 }
 
 /// The hardened box from CLAUDE.md 2.3.

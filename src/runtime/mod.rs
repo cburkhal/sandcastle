@@ -108,7 +108,7 @@ pub struct ExecOutput {
     pub stderr: String,
 }
 
-pub trait SandboxRuntime {
+pub trait SandboxRuntime: Send + Sync {
     /// Make the runtime usable, starting its background service if needed.
     fn ensure_started(&self) -> Result<()>;
 

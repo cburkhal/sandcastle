@@ -1,22 +1,15 @@
 //! sandcastle: one OpenCode instance per Git repo, each in its own VM.
 
-mod agent;
-mod core;
-mod firewall;
-mod relay;
-mod runtime;
-mod secrets;
-
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
-use crate::agent::opencode::OpenCode;
-use crate::core::lifecycle::{self, App};
-use crate::core::up::Options;
-use crate::runtime::apple_container::AppleContainer;
-use crate::secrets::bitwarden::Bitwarden;
+use sandcastle::agent::opencode::OpenCode;
+use sandcastle::core::lifecycle::{self, App};
+use sandcastle::core::up::Options;
+use sandcastle::runtime::apple_container::AppleContainer;
+use sandcastle::secrets::bitwarden::Bitwarden;
 
 #[derive(Parser)]
 #[command(name = "sandcastle", version, about)]
@@ -94,7 +87,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Down { path } => lifecycle::down(&cx, &path),
         Command::Ls => lifecycle::list(&cx),
-        Command::Fetch { path } => crate::core::git::fetch(&cx, &path),
+        Command::Fetch { path } => sandcastle::core::git::fetch(&cx, &path),
         Command::Reset { path, yes } => lifecycle::reset(&cx, &path, yes),
     }
 }
@@ -107,5 +100,5 @@ fn up(cx: &App, path: &std::path::Path, options: Options) -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(crate::core::up::run(cx, &mut store, path, options))
+        .block_on(sandcastle::core::up::run(cx, &mut store, path, options))
 }

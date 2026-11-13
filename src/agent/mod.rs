@@ -25,7 +25,7 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-pub trait Agent {
+pub trait Agent: Send + Sync {
     fn image(&self) -> ImageSource;
     /// Numeric user the agent runs as; volumes are handed to this user.
     fn uid(&self) -> u32;

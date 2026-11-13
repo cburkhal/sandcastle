@@ -70,6 +70,15 @@ impl UiGateway {
         token.as_ref().map(|token| format!("{}{LOGIN_PATH}{token}", self.origin))
     }
 
+    /// A fresh one-time link; any unused earlier link stops working. For a
+    /// browser that lost the session cookie.
+    pub fn new_login_url(&self) -> anyhow::Result<String> {
+        let token = super::random_token(32)?;
+        let url = format!("{}{LOGIN_PATH}{token}", self.origin);
+        *self.login_token.lock().map_err(|_| anyhow::anyhow!("the login state is broken"))? = Some(token);
+        Ok(url)
+    }
+
     pub async fn handle(self: Arc<Self>, request: Request<Incoming>) -> Response<Body> {
         if let Err(reason) = self.check_headers(&request) {
             self.log.refused(&format!("ui: refused {} {}: {reason}", request.method(), request.uri().path()));

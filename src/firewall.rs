@@ -7,10 +7,11 @@
 //! LAN device with a route could reach the box (spike items 1, 4 and 9).
 //!
 //! Root is needed twice: once in `init` to add an anchor line to
-//! `/etc/pf.conf`, and once per `up`. For `up`, a small root helper is started
-//! during the secrets phase, so the password prompt comes first. The helper
-//! loads the rules when it is told to and removes them when its input closes,
-//! which also happens if sandcastle crashes.
+//! `/etc/pf.conf`, and once per session (one `up`, or one run of the app). A
+//! small root helper is started during the secrets phase, so the password
+//! prompt comes first. The helper loads and removes the rules of each box
+//! when it is told to, and removes all of them when its input closes, which
+//! also happens if sandcastle crashes.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
@@ -109,39 +110,68 @@ fn parse_interface(ifconfig: &str, gateway: IpAddr) -> Option<String> {
     None
 }
 
-/// The root helper for one box. See the module documentation.
+/// The root helper for a session: one `sudo`, any number of boxes. See the
+/// module documentation.
 pub struct Firewall {
     child: Child,
     input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
 }
 
-/// Runs as root. Line protocol on stdin: a rule count, then that many rules.
-/// It answers `ready` first, then `loaded` or `failed`, and cleans up when
-/// stdin closes. Signals are ignored so that Ctrl-C in the terminal cannot
-/// kill it before the cleanup.
+/// Runs as root. Line protocol on stdin:
+/// - `load <box> <count>` followed by that many rules; answers `loaded` or `failed`,
+/// - `unload <box>`; answers `unloaded`.
+/// It answers `ready` first and cleans up when stdin closes: the rules of
+/// every box it loaded go, then its pf token. Signals are ignored so that
+/// Ctrl-C in the terminal cannot kill it before the cleanup. Box names are
+/// checked here too, because they become part of a pf anchor name.
 const HELPER: &str = r#"trap '' INT TERM HUP
-anchor="$1"
 if pfctl -sr 2>/dev/null | grep -q '^anchor "sandcastle/\*"'; then echo ready; else echo no-anchor; exit 0; fi
-IFS= read -r count || exit 0
 token=$(pfctl -E 2>&1 | awk '/Token/{print $NF}')
-i=0
-while [ "$i" -lt "$count" ]; do IFS= read -r rule || break; printf '%s\n' "$rule"; i=$((i+1)); done \
-  | pfctl -a "$anchor" -f - 2>/dev/null && echo loaded || echo failed
-cat >/dev/null
-pfctl -a "$anchor" -F all >/dev/null 2>&1
+boxes=""
+valid() { case "$1" in ''|*[!a-z0-9-]*) return 1;; esac; return 0; }
+while IFS=' ' read -r command box count; do
+  case "$command" in
+    load)
+      rules=""; i=0
+      while [ "$i" -lt "${count:-0}" ]; do IFS= read -r rule || break; rules="$rules$rule
+"; i=$((i+1)); done
+      if valid "$box" && printf '%s' "$rules" | pfctl -a "sandcastle/$box" -f - 2>/dev/null; then
+        boxes="$boxes $box"; echo loaded
+      else echo failed; fi;;
+    unload)
+      valid "$box" && pfctl -a "sandcastle/$box" -F all >/dev/null 2>&1
+      echo unloaded;;
+  esac
+done
+for box in $boxes; do pfctl -a "sandcastle/$box" -F all >/dev/null 2>&1; done
 [ -n "$token" ] && pfctl -X "$token" >/dev/null 2>&1
 exit 0"#;
 
+/// How `sudo` asks for the password.
+pub enum Prompt<'a> {
+    /// On the terminal sandcastle runs in.
+    Terminal,
+    /// Through this program (`sudo -A`), for apps without a terminal.
+    Askpass(&'a std::path::Path),
+}
+
 impl Firewall {
     /// Start the helper. This is where the sudo prompt appears.
-    pub fn start(box_name: &str) -> Result<Self> {
-        let mut child = sudo(
-            "load firewall (pf) rules for this box, and remove them when it stops",
-            "the box may reach only sandcastle's relay on this Mac, and only this Mac may reach the box",
-        )
-            .args(["/bin/sh", "-c", HELPER, "sandcastle-firewall"])
-            .arg(format!("sandcastle/{box_name}"))
+    pub fn start(prompt: Prompt) -> Result<Self> {
+        let mut command = sudo(
+            "load firewall (pf) rules for each box, and remove them when it stops",
+            "a box may reach only sandcastle's relay on this Mac, and only this Mac may reach the box",
+        );
+        if let Prompt::Askpass(program) = prompt {
+            command.arg("-A").env("SUDO_ASKPASS", program);
+        }
+        command.args(["/bin/sh", "-c", HELPER, "sandcastle-firewall"]);
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> Result<Self> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -159,25 +189,38 @@ impl Firewall {
         }
     }
 
-    /// Load the rules for the box. Until this returns, the box is not confined.
-    pub fn load(&mut self, rules: &[String]) -> Result<()> {
+    fn command(&mut self, lines: &[String]) -> Result<String> {
         let input = self.input.as_mut().ok_or_else(|| anyhow!("the firewall helper is gone"))?;
-        writeln!(input, "{}", rules.len())?;
-        for rule in rules {
-            writeln!(input, "{rule}")?;
+        for line in lines {
+            writeln!(input, "{line}")?;
         }
         input.flush()?;
-        let mut line = String::new();
-        self.output.read_line(&mut line)?;
-        if line.trim() != "loaded" {
-            bail!("pf rejected the firewall rules for the box");
+        let mut answer = String::new();
+        self.output.read_line(&mut answer)?;
+        Ok(answer.trim().to_string())
+    }
+
+    /// Load the rules for a box. Until this returns, the box is not confined.
+    pub fn load(&mut self, box_name: &str, rules: &[String]) -> Result<()> {
+        let mut lines = vec![format!("load {box_name} {}", rules.len())];
+        lines.extend(rules.iter().cloned());
+        if self.command(&lines)? != "loaded" {
+            bail!("pf rejected the firewall rules for box {box_name}");
+        }
+        Ok(())
+    }
+
+    /// Remove the rules of a box that has stopped.
+    pub fn unload(&mut self, box_name: &str) -> Result<()> {
+        if self.command(&[format!("unload {box_name}")])? != "unloaded" {
+            bail!("the firewall helper did not remove the rules for box {box_name}");
         }
         Ok(())
     }
 }
 
 impl Drop for Firewall {
-    /// Closing the helper's input makes it remove the rules; wait for that.
+    /// Closing the helper's input makes it remove all rules; wait for that.
     fn drop(&mut self) {
         self.input.take();
         let _ = self.child.wait();
@@ -205,6 +248,50 @@ mod tests {
                 "pass out quick on bridge100 inet proto tcp from 192.168.128.1 to 192.168.128.0/24 port 4096 keep state",
                 "block return in quick on bridge100 all",
                 "block return out quick on bridge100 all",
+            ]
+        );
+    }
+
+    /// The helper's protocol, with a fake `pfctl` that records its calls.
+    #[test]
+    fn helper_loads_unloads_and_cleans_up_when_its_input_closes() {
+        let dir = std::env::temp_dir().join(format!("sandcastle-fw-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = dir.join("calls");
+        let fake = format!(
+            "#!/bin/sh\ncase \"$1\" in -sr) echo 'anchor \"sandcastle/*\" all';; -E) echo 'Token : 42';; \
+             -a) if [ \"$3\" = -f ]; then echo \"load $2: $(cat | tr '\\n' '|')\" >>{0}; else echo \"flush $2\" >>{0}; fi;; \
+             -X) echo \"release $2\" >>{0};; esac\n",
+            calls.display()
+        );
+        std::fs::write(dir.join("pfctl"), fake).unwrap();
+        let mut make_executable = Command::new("chmod");
+        make_executable.arg("+x").arg(dir.join("pfctl"));
+        assert!(make_executable.status().unwrap().success());
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", HELPER, "sandcastle-firewall"]);
+        command.env("PATH", format!("{}:/usr/bin:/bin", dir.display()));
+        let mut firewall = Firewall::spawn(command).unwrap();
+        firewall.load("sc-a-1", &["rule one".into(), "rule two".into()]).unwrap();
+        firewall.load("sc-b-2", &["rule three".into()]).unwrap();
+        // A name that could leave the anchor namespace is refused, and the
+        // helper stays in step with the protocol.
+        assert!(firewall.load("../evil", &["rule four".into()]).is_err());
+        firewall.unload("sc-a-1").unwrap();
+        drop(firewall);
+
+        let calls = std::fs::read_to_string(&calls).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            calls.lines().collect::<Vec<_>>(),
+            [
+                "load sandcastle/sc-a-1: rule one|rule two|",
+                "load sandcastle/sc-b-2: rule three|",
+                "flush sandcastle/sc-a-1",
+                "flush sandcastle/sc-a-1",
+                "flush sandcastle/sc-b-2",
+                "release 42",
             ]
         );
     }
