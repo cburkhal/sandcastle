@@ -1,0 +1,41 @@
+# sandcastle box image for the OpenCode agent. Built by `sandcastle init`.
+# Everything is pinned: the base image by digest, OpenCode by version and
+# SHA-256 of the GitHub release tarball. arm64 only (Apple silicon).
+
+# renovate: datasource=docker depName=debian versioning=docker
+ARG BASE=docker.io/library/debian:stable-slim@sha256:fbfb4059d2127120aa05b6e6064523d2102552f0cf0026ddf0701c12f1f8f3e0
+
+FROM ${BASE} AS fetch
+# renovate: datasource=github-releases depName=anomalyco/opencode
+ARG OPENCODE_VERSION=2.2.7
+# SHA-256 of opencode-linux-arm64.tar.gz from the release's SHA256SUMS file.
+ARG OPENCODE_SHA256=c1682057f0815cb2abdd6e00305f1146ebaf1c167f0335cdb74ddc80008120e7
+ADD --checksum=sha256:${OPENCODE_SHA256} \
+    https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz \
+    /tmp/opencode.tar.gz
+RUN tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode
+
+# Node from nodejs.org, not from Debian: Debian's Node 20 ignores the proxy
+# variables for fetch. NODE_USE_ENV_PROXY needs Node 22.21 or newer.
+# renovate: datasource=node-version depName=node
+ARG NODE_VERSION=22.23.5
+# SHA-256 of node-v${NODE_VERSION}-linux-arm64.tar.gz from SHASUMS256.txt.
+ARG NODE_SHA256=8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3
+ADD --checksum=sha256:${NODE_SHA256} \
+    https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.gz \
+    /tmp/node.tar.gz
+RUN mkdir /opt/node && tar -xzf /tmp/node.tar.gz -C /opt/node --strip-components=1 \
+ && rm -rf /opt/node/include /opt/node/share /opt/node/*.md
+
+FROM ${BASE}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 1001 --shell /bin/bash agent \
+ && mkdir /workspace && chown agent:agent /workspace
+COPY --from=fetch /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=fetch /opt/node /opt/node
+ENV PATH=/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER agent
+WORKDIR /workspace
