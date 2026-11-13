@@ -73,6 +73,31 @@ impl Agent for OpenCode {
         "/"
     }
 
+    /// The newest session, or a new one if the box has none. The web UI's
+    /// start page is empty until the user finds the small "+"; a session URL
+    /// opens the chat directly. URL form checked against 2.2.7:
+    /// `/server/<base64url of the origin, unpadded>/session/<id>`.
+    fn landing_path(&self, origin: &str, api: &dyn Fn(&str, &str, &str) -> anyhow::Result<String>) -> String {
+        let id_of = |body: anyhow::Result<String>, pointer: &str| -> Option<String> {
+            let value: Value = serde_json::from_str(&body.ok()?).ok()?;
+            let id = value.pointer(pointer)?.as_str()?;
+            let plain = !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            plain.then(|| id.to_string())
+        };
+        let session = id_of(api("GET", "/api/session?limit=1", ""), "/data/0/id")
+            .or_else(|| id_of(api("POST", "/api/session", "{}"), "/data/id"));
+        match session {
+            Some(id) => {
+                let server = crate::relay::http::base64(origin.as_bytes())
+                    .trim_end_matches('=')
+                    .replace('+', "-")
+                    .replace('/', "_");
+                format!("/server/{server}/session/{id}")
+            }
+            None => "/".to_string(),
+        }
+    }
+
     fn api_user(&self) -> &str {
         "opencode"
     }
@@ -121,6 +146,24 @@ mod tests {
         let wait = script.find("/dev/tcp/192.168.128.1/4180").unwrap();
         let cd = script.find("cd /workspace/repo").unwrap();
         assert!(wait < cd && cd < script.find("opencode serve").unwrap());
+    }
+
+    #[test]
+    fn landing_is_the_newest_session_or_a_new_one_or_the_root() {
+        let origin = "http://127.0.0.1:57702";
+        let existing = |method: &str, _: &str, _: &str| -> anyhow::Result<String> {
+            assert_eq!(method, "GET");
+            Ok(r#"{"data":[{"id":"ses_abc"}]}"#.into())
+        };
+        assert_eq!(OpenCode.landing_path(origin, &existing), "/server/aHR0cDovLzEyNy4wLjAuMTo1NzcwMg/session/ses_abc");
+        let none_yet = |method: &str, _: &str, _: &str| -> anyhow::Result<String> {
+            Ok(if method == "GET" { r#"{"data":[]}"# } else { r#"{"data":{"id":"ses_new"}}"# }.into())
+        };
+        assert!(OpenCode.landing_path(origin, &none_yet).ends_with("/session/ses_new"));
+        let broken = |_: &str, _: &str, _: &str| -> anyhow::Result<String> { Ok(r#"{"data":{"id":"../x"}}"#.into()) };
+        assert_eq!(OpenCode.landing_path(origin, &broken), "/");
+        let down = |_: &str, _: &str, _: &str| -> anyhow::Result<String> { anyhow::bail!("no answer") };
+        assert_eq!(OpenCode.landing_path(origin, &down), "/");
     }
 
     #[test]

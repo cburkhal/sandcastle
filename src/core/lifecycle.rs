@@ -127,7 +127,7 @@ fn hand_volume_to_agent(cx: &App, image: &str, volume: &str) -> Result<()> {
 
 /// `sandcastle down`: stop and remove the box; network and volumes stay.
 pub fn down(cx: &App, path: &Path) -> Result<()> {
-    let name = state::box_name(&state::repo_root(path)?);
+    let name = state::box_name(&state::box_root(path)?);
     stop(cx, &name)
 }
 
@@ -169,7 +169,7 @@ pub fn list(cx: &App) -> Result<()> {
 /// `sandcastle reset`: delete the box, its network, both volumes and its
 /// state. The host repo is not touched.
 pub fn reset(cx: &App, path: &Path, assume_yes: bool) -> Result<()> {
-    let repo = state::repo_root(path)?;
+    let repo = state::box_root(path)?;
     let name = state::box_name(&repo);
     let Some(record) = state::load(cx.home, &name)? else {
         println!("No box exists for {}.", repo.display());

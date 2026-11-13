@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandcastle</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav aria-label="Boxes">
+  <div class="brand">
+    <span>sandcastle</span>
+    <button id="add" class="icon" aria-label="Add a folder" disabled>+</button>
+  </div>
+  <p class="label">Boxes</p>
+  <div id="boxes"></div>
+  <section class="session">
+    <p class="label">Session</p>
+    <p id="session-state">Locked</p>
+    <p id="firewall-state"></p>
+    <button id="lock" hidden>Lock and stop all</button>
+  </section>
+</nav>
+<main>
+  <p id="error" role="alert" hidden></p>
+
+  <form id="unlock" hidden>
+    <h1>Unlock sandcastle</h1>
+    <p>sandcastle asks once for what it needs. After that, boxes start and stop without prompts until you lock or quit.</p>
+    <div id="password-row">
+      <label for="password">Bitwarden master password</label>
+      <input id="password" type="password" autocomplete="off">
+      <p class="hint">Needed to read the LLM key. It is handed to the Bitwarden CLI once and not kept.</p>
+    </div>
+    <p id="sudo-hint" class="hint">Next, macOS asks for Touch ID or your login password (sudo), to load firewall rules: a box may reach only sandcastle's relay on this Mac.</p>
+    <button class="primary" type="submit">Unlock</button>
+  </form>
+
+  <section id="detail" hidden>
+    <header>
+      <div>
+        <h1 id="box-name"></h1>
+        <p id="box-repo" class="mono"></p>
+      </div>
+      <div class="actions">
+        <button id="chat" class="primary">Open chat</button>
+        <button id="toggle"></button>
+      </div>
+    </header>
+    <section>
+      <div class="row">
+        <h2>Agent's work</h2>
+        <button id="fetch">Fetch commits</button>
+      </div>
+      <ul id="branches"></ul>
+      <p class="hint">Fetching never checks out or merges. Review like a pull request from a stranger: <span class="mono">git log -p HEAD..sandcastle/&lt;branch&gt;</span></p>
+    </section>
+  </section>
+
+  <p id="empty" hidden>No boxes yet. Add a folder with the + button. A Git repository is cloned into its box; any other folder gets an empty box.</p>
+  <p id="busy" role="status" hidden></p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

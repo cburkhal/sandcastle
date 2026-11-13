@@ -22,8 +22,18 @@ use tokio::net::TcpStream;
 use super::http::{base64, constant_time_eq, empty, streaming, strip_hop_by_hop, text, Body, BoxError};
 use super::log::Log;
 
-const LOGIN_PATH: &str = "/__sandcastle/login/";
+/// Under `/auth/` on purpose: the agent's web UI may install a service worker
+/// that answers every other page navigation from its cache, so a login link
+/// elsewhere never reaches the gateway on a second visit. OpenCode's worker
+/// leaves `/api/` and `/auth/` alone.
+const LOGIN_PATH: &str = "/auth/__sandcastle/login/";
 const COOKIE_NAME: &str = "sandcastle_session";
+
+/// A one-time login: the token in the link and where the browser goes next.
+struct Login {
+    token: String,
+    landing: HeaderValue,
+}
 
 pub struct UiGateway {
     /// `127.0.0.1:<port>`: the only accepted `Host`.
@@ -34,7 +44,7 @@ pub struct UiGateway {
     target: SocketAddr,
     authorization: HeaderValue,
     /// One-time login token; `None` once it has been used.
-    login_token: Mutex<Option<String>>,
+    login_token: Mutex<Option<Login>>,
     session: String,
     log: Log,
 }
@@ -58,7 +68,7 @@ impl UiGateway {
             origin: format!("http://127.0.0.1:{port}"),
             target,
             authorization,
-            login_token: Mutex::new(Some(login_token)),
+            login_token: Mutex::new(Some(Login { token: login_token, landing: HeaderValue::from_static("/") })),
             session,
             log,
         }
@@ -67,7 +77,18 @@ impl UiGateway {
     /// The link that logs the browser in. It works once.
     pub fn login_url(&self) -> Option<String> {
         let token = self.login_token.lock().ok()?;
-        token.as_ref().map(|token| format!("{}{LOGIN_PATH}{token}", self.origin))
+        token.as_ref().map(|login| format!("{}{LOGIN_PATH}{}", self.origin, login.token))
+    }
+
+    /// A fresh one-time link; any unused earlier link stops working. After
+    /// the login the browser is sent to `landing`, a path on this gateway;
+    /// anything else falls back to `/`.
+    pub fn new_login_url(&self, landing: &str) -> anyhow::Result<String> {
+        let token = super::random_token(32)?;
+        let url = format!("{}{LOGIN_PATH}{token}", self.origin);
+        let landing = landing_header(landing);
+        *self.login_token.lock().map_err(|_| anyhow::anyhow!("the login state is broken"))? = Some(Login { token, landing });
+        Ok(url)
     }
 
     pub async fn handle(self: Arc<Self>, request: Request<Incoming>) -> Response<Body> {
@@ -112,19 +133,18 @@ impl UiGateway {
             Ok(guard) => guard,
             Err(_) => return text(StatusCode::INTERNAL_SERVER_ERROR, "sandcastle: internal error"),
         };
-        let matches = expected.as_deref().is_some_and(|expected| constant_time_eq(expected, token));
-        if !matches {
+        let matches = expected.as_ref().is_some_and(|expected| constant_time_eq(&expected.token, token));
+        let Some(login) = (if matches { expected.take() } else { None }) else {
             self.log.refused("ui: refused login: wrong or used link");
             return text(StatusCode::FORBIDDEN, "sandcastle: this login link is wrong or was already used");
-        }
-        *expected = None;
+        };
         self.log.line("ui: browser logged in");
 
         let cookie = format!("{COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict", self.session);
         let mut response = Response::new(empty());
         *response.status_mut() = StatusCode::SEE_OTHER;
         let headers = response.headers_mut();
-        headers.insert(LOCATION, HeaderValue::from_static("/"));
+        headers.insert(LOCATION, login.landing);
         headers.insert(SET_COOKIE, HeaderValue::from_str(&cookie).expect("session is hex"));
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         response
@@ -181,6 +201,16 @@ impl UiGateway {
         strip_hop_by_hop(&mut parts.headers, false);
         // Streamed as it arrives: the UI relies on server-sent events.
         Ok(Response::from_parts(parts, streaming(body)))
+    }
+}
+
+/// A redirect target on this gateway: a path, never another site.
+fn landing_header(landing: &str) -> HeaderValue {
+    let local = landing.starts_with('/') && !landing.starts_with("//") && !landing.contains('\\');
+    let safe = landing.bytes().all(|byte| byte.is_ascii_graphic());
+    match HeaderValue::from_str(landing) {
+        Ok(value) if local && safe => value,
+        _ => HeaderValue::from_static("/"),
     }
 }
 
@@ -319,6 +349,27 @@ mod tests {
         assert!(seen[0].contains("auth=Basic b3BlbmNvZGU6cHc= "), "{}", seen[0]);
         assert!(seen[0].contains("cookie=theme=dark "), "session cookie must be stripped: {}", seen[0]);
         assert!(seen[0].ends_with("body=body"));
+    }
+
+    #[tokio::test]
+    async fn a_new_link_replaces_the_old_one_and_lands_where_asked() {
+        let s = setup().await;
+        let old = s.ui.login_url().unwrap();
+        let new = s.ui.new_login_url("/server/abc/session/ses_1").unwrap();
+        let path = |url: &str| url.split_once("://").unwrap().1.split_once('/').map(|(_, p)| format!("/{p}")).unwrap();
+        let refused = raw(s.gateway, get(&s, &path(&old), "")).await;
+        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+        let accepted = raw(s.gateway, get(&s, &path(&new), "")).await;
+        assert!(accepted.starts_with("HTTP/1.1 303"), "{accepted}");
+        assert!(accepted.contains("location: /server/abc/session/ses_1\r\n"), "{accepted}");
+    }
+
+    #[test]
+    fn landing_is_a_local_path_or_the_root() {
+        assert_eq!(landing_header("/server/a/session/b"), "/server/a/session/b");
+        for bad in ["https://evil.example/", "//evil.example/", "/a\\b", "/a b", "relative", "/a\r\nSet-Cookie: x=1", ""] {
+            assert_eq!(landing_header(bad), "/", "{bad:?}");
+        }
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
-pub trait Agent {
+pub trait Agent: Send + Sync {
     fn image(&self) -> ImageSource;
     /// Numeric user the agent runs as; volumes are handed to this user.
     fn uid(&self) -> u32;
@@ -46,6 +46,14 @@ pub trait Agent {
     fn ui_port(&self) -> u16;
     /// Path that answers 200 without credentials once the agent is up.
     fn health_path(&self) -> &str;
+    /// Where the browser should go right after login, as a path of the
+    /// agent's UI, so the user lands in a chat and not on an empty start
+    /// page. `origin` is the address the browser uses. `api(method, path,
+    /// body)` sends an authenticated request to the agent's API and returns
+    /// the response body. Any failure must fall back to `/`.
+    fn landing_path(&self, _origin: &str, _api: &dyn Fn(&str, &str, &str) -> anyhow::Result<String>) -> String {
+        "/".to_string()
+    }
     /// User name for the agent's API (HTTP Basic Auth).
     fn api_user(&self) -> &str;
     /// Process and environment. `password` protects the agent's API; only the

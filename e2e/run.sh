@@ -110,7 +110,8 @@ status() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@"; }
 step "UI gateway"
 expect_text "no cookie: refused" 401 "$(status "$UI/")"
 expect_text "login link with a foreign Host: refused" 403 "$(status -H "Host: evil.example:$UI_PORT" "$LINK")"
-status -c "$JAR" "$LINK" >/dev/null
+LANDING="$(curl -s -o /dev/null -c "$JAR" -w '%{redirect_url}' --max-time 10 "$LINK")"
+expect_text "login lands in a chat session" "/session/ses_" "$LANDING"
 expect_ok "login link sets the session cookie" grep -q sandcastle_session "$JAR"
 expect_text "login link works only once" 403 "$(status "$LINK")"
 expect_text "with the cookie: UI answers" 200 "$(status -b "$JAR" "$UI/")"
@@ -186,6 +187,36 @@ expect_ok "reset succeeds" bash -c "cd '$REPO' && '$BIN' reset --yes"
 expect_fail "reset removes the volumes" bash -c "container volume list --quiet | grep -q '^$BOX'"
 expect_fail "reset removes the network" bash -c "container network list --quiet | grep -q '^$BOX'"
 expect_no_text "nothing was written to the real home" "$BOX" "$(ls "$REAL_HOME/Library/Application Support/sandcastle/boxes" 2>/dev/null)"
+
+step "A folder that is not a Git repository"
+PLAIN="$WORK/plain-folder"
+mkdir -p "$PLAIN"
+echo "stays on the host" >"$PLAIN/notes.txt"
+PLAIN_LOG="$WORK/up-plain.log"
+(cd "$PLAIN" && SANDCASTLE_E2E_KEY="$KEY" exec "$BIN" "${UP_ARGS[@]}") >"$PLAIN_LOG" 2>&1 &
+UP_PID=$!
+REPO="$PLAIN"   # cleanup resets this box
+for _ in $(seq 1 240); do
+  grep -q 'http://127\.0\.0\.1:[0-9]*/' "$PLAIN_LOG" && break
+  kill -0 "$UP_PID" 2>/dev/null || break
+  sleep 0.5
+done
+if grep -q 'http://127\.0\.0\.1:[0-9]*/' "$PLAIN_LOG"; then
+  pass "up starts a box for a plain folder"
+  BOX="$(cd "$PLAIN" && "$BIN" ls | awk '$1 ~ /^sc-plain-folder/ {print $1}')"
+  expect_ok "the box has an empty workspace folder" box bash -c 'test -d /workspace/repo && [ -z "$(ls -A /workspace/repo)" ]'
+  expect_fail "nothing from the host folder is mounted" box test -e /source.git
+  expect_fail "fetch explains that the host folder is not a repository" bash -c "cd '$PLAIN' && '$BIN' fetch"
+  box bash -c 'cd /workspace/repo && git init --quiet -b main && echo new >made.txt && git add made.txt && git commit --quiet -m "made in the box"'
+  git -C "$PLAIN" init --quiet -b main
+  expect_ok "after git init on the host, fetch succeeds" bash -c "cd '$PLAIN' && '$BIN' fetch"
+  expect_text "the box's commit arrives" "made in the box" "$(git -C "$PLAIN" log -1 --format=%s sandcastle/main 2>&1)"
+  expect_fail "host folder is otherwise untouched" test -e "$PLAIN/made.txt"
+  kill -INT "$UP_PID"; wait "$UP_PID" 2>/dev/null; UP_PID=""
+  expect_ok "reset succeeds" bash -c "cd '$PLAIN' && '$BIN' reset --yes"
+else
+  fail "up starts a box for a plain folder"; cat "$PLAIN_LOG"
+fi
 
 printf '\n%d failed check(s)\n' "$FAILS"
 [ "$FAILS" -eq 0 ]

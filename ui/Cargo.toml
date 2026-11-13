@@ -1,0 +1,22 @@
+[package]
+name = "sandcastle-ui"
+version = "0.2.0"
+edition = "2021"
+description = "The sandcastle app: start, stop and open boxes from a window"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "sandcastle-ui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+sandcastle = { path = ".." }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["sync"] }

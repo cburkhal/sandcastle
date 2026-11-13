@@ -66,8 +66,10 @@ fn url_has_credentials(value: &str) -> bool {
 }
 
 /// Make sure the box has its clone, and bring it up to date with the host.
-/// Runs inside the box before the agent starts.
-pub fn seed(cx: &App, box_name: &str) -> Result<()> {
+/// Runs inside the box before the agent starts. Without a host repo
+/// (`has_source` false) the box gets an empty folder to start in; the agent
+/// can create or clone a repository there.
+pub fn seed(cx: &App, box_name: &str, has_source: bool) -> Result<()> {
     let repo_dir = cx.agent.repo_dir();
     let run = |args: &[&str]| -> Result<bool> {
         let command: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
@@ -82,16 +84,20 @@ pub fn seed(cx: &App, box_name: &str) -> Result<()> {
         Ok(())
     };
 
+    if !run(&["git", "config", "--global", "user.name"])? {
+        must(&["git", "config", "--global", "user.name", "sandcastle agent"], "git config user.name")?;
+        must(&["git", "config", "--global", "user.email", "agent@sandcastle.invalid"], "git config user.email")?;
+    }
+    if !has_source {
+        return must(&["mkdir", "-p", &repo_dir], "creating the workspace folder");
+    }
+
     // The mount shows up as owned by root; Git refuses it without this (spike item 7).
     // `--replace-all` keeps the setting single across restarts.
     must(
         &["git", "config", "--global", "--replace-all", "safe.directory", SOURCE_MOUNT],
         "git config safe.directory",
     )?;
-    if !run(&["git", "config", "--global", "user.name"])? {
-        must(&["git", "config", "--global", "user.name", "sandcastle agent"], "git config user.name")?;
-        must(&["git", "config", "--global", "user.email", "agent@sandcastle.invalid"], "git config user.email")?;
-    }
 
     if run(&["test", "-d", &format!("{repo_dir}/.git")])? {
         // New host commits become visible as origin/*; the agent's branches are left alone.
@@ -107,11 +113,41 @@ pub fn seed(cx: &App, box_name: &str) -> Result<()> {
 /// `sandcastle fetch`: bring the box's commits into the host repo under
 /// `refs/remotes/sandcastle/*`. Nothing is checked out or merged.
 pub fn fetch(cx: &App, path: &Path) -> Result<()> {
-    let repo = state::repo_root(path)?;
+    let listing = fetch_refs(cx, path)?;
+    if listing.is_empty() {
+        println!("The box has no branches yet.");
+        return Ok(());
+    }
+    println!("Branches from the box, now in this repo:");
+    for line in &listing {
+        println!("  {line}");
+    }
+    println!("Nothing was checked out or merged. Treat these like a pull request from a stranger:");
+    println!("  git log -p HEAD..{REMOTE}/<branch>     review");
+    println!("  git merge {REMOTE}/<branch>            take the changes");
+    Ok(())
+}
+
+/// The fetch itself. Returns one line per branch of the box:
+/// `sandcastle/<branch>  <commit>  <subject>`.
+pub fn fetch_refs(cx: &App, path: &Path) -> Result<Vec<String>> {
+    let repo = state::box_root(path)?;
     let name = state::box_name(&repo);
+    if !state::is_repo(&repo) {
+        bail!(
+            "{} is not a Git repository, so there is nowhere to fetch into.              Run `git init` there first, then fetch again",
+            repo.display()
+        );
+    }
     if cx.runtime.inspect(&name)?.state != BoxState::Running {
         // The workspace volume can only be read through the running box.
         bail!("box {name} is not running; start it with `sandcastle up`, then fetch from another terminal");
+    }
+
+    let repo_dir = cx.agent.repo_dir();
+    let has_repo = cx.runtime.exec(&name, &["test".into(), "-d".into(), format!("{repo_dir}/.git")], None)?.success;
+    if !has_repo {
+        bail!("the agent has no Git repository in {repo_dir} yet, so there is nothing to fetch");
     }
 
     // Git runs this command and speaks its protocol over stdin/stdout, so the
@@ -139,19 +175,7 @@ pub fn fetch(cx: &App, path: &Path) -> Result<()> {
         .args(["for-each-ref", "--format=%(refname:short)  %(objectname:short)  %(subject)"])
         .arg(format!("refs/remotes/{REMOTE}/"))
         .output()?;
-    let listing = String::from_utf8_lossy(&branches.stdout);
-    if listing.trim().is_empty() {
-        println!("The box has no branches yet.");
-        return Ok(());
-    }
-    println!("Branches from the box, now in this repo:");
-    for line in listing.lines() {
-        println!("  {line}");
-    }
-    println!("Nothing was checked out or merged. Treat these like a pull request from a stranger:");
-    println!("  git log -p HEAD..{REMOTE}/<branch>     review");
-    println!("  git merge {REMOTE}/<branch>            take the changes");
-    Ok(())
+    Ok(String::from_utf8_lossy(&branches.stdout).lines().map(str::to_string).collect())
 }
 
 #[cfg(test)]

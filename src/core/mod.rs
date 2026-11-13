@@ -6,5 +6,6 @@
 pub mod config;
 pub mod git;
 pub mod lifecycle;
+pub mod session;
 pub mod state;
 pub mod up;

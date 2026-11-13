@@ -13,10 +13,14 @@ use serde::{Deserialize, Serialize};
 pub struct BoxRecord {
     /// Name of the box; network and volumes derive from it.
     pub name: String,
-    /// Root of the host repo this box belongs to.
+    /// The folder this box belongs to: a host repo's root, or a plain folder.
     pub repo: PathBuf,
     /// Digest of the image the box was last started from.
     pub image_digest: String,
+    /// Port of the chat on `127.0.0.1`, kept across starts so the browser
+    /// sees the same site again and the web UI keeps what it remembers.
+    #[serde(default)]
+    pub ui_port: Option<u16>,
 }
 
 impl BoxRecord {
@@ -92,21 +96,31 @@ pub fn list(home: &Path) -> Result<Vec<BoxRecord>> {
     Ok(records)
 }
 
-/// Find the root of the Git repo that contains `start`.
-pub fn repo_root(start: &Path) -> Result<PathBuf> {
+/// The folder a box belongs to: the root of the Git repo that contains
+/// `start`, or `start` itself when it is not inside a repo. A box does not
+/// need a host repo; without one it starts with an empty workspace.
+pub fn box_root(start: &Path) -> Result<PathBuf> {
     let start = start
         .canonicalize()
         .with_context(|| format!("no such directory: {}", start.display()))?;
+    if !start.is_dir() {
+        bail!("{} is not a directory", start.display());
+    }
     let mut dir = start.as_path();
     loop {
-        if dir.join(".git").exists() {
+        if is_repo(dir) {
             return Ok(dir.to_path_buf());
         }
         match dir.parent() {
             Some(parent) => dir = parent,
-            None => bail!("{} is not inside a Git repository", start.display()),
+            None => return Ok(start),
         }
     }
+}
+
+/// Whether `root` is the top of a Git checkout.
+pub fn is_repo(root: &Path) -> bool {
+    root.join(".git").exists()
 }
 
 /// Box name for a repo: readable, unique per path, valid as a container,
@@ -160,7 +174,7 @@ mod tests {
     #[test]
     fn records_round_trip_and_list_sorted() {
         let home = std::env::temp_dir().join(format!("sandcastle-state-test-{}", std::process::id()));
-        let record = |name: &str| BoxRecord { name: name.into(), repo: "/r".into(), image_digest: "sha256:x".into() };
+        let record = |name: &str| BoxRecord { name: name.into(), repo: "/r".into(), image_digest: "sha256:x".into(), ui_port: None };
         save(&home, &record("sc-b")).unwrap();
         save(&home, &record("sc-a")).unwrap();
         assert_eq!(load(&home, "sc-a").unwrap(), Some(record("sc-a")));
@@ -173,12 +187,18 @@ mod tests {
     }
 
     #[test]
-    fn repo_root_walks_up_to_the_git_directory() {
+    fn box_root_walks_up_to_the_git_directory_or_stays() {
         let base = std::env::temp_dir().join(format!("sandcastle-root-test-{}", std::process::id()));
         fs::create_dir_all(base.join("repo/.git")).unwrap();
         fs::create_dir_all(base.join("repo/src/deep")).unwrap();
-        let root = repo_root(&base.join("repo/src/deep")).unwrap();
+        let root = box_root(&base.join("repo/src/deep")).unwrap();
         assert_eq!(root, base.join("repo").canonicalize().unwrap());
+        assert!(is_repo(&root));
+        // A folder outside any repo is its own root.
+        fs::create_dir_all(base.join("plain/sub")).unwrap();
+        let plain = box_root(&base.join("plain/sub")).unwrap();
+        assert_eq!(plain, base.join("plain/sub").canonicalize().unwrap());
+        assert!(!is_repo(&plain));
         fs::remove_dir_all(&base).unwrap();
     }
 }

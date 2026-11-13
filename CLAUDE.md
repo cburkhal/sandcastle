@@ -148,6 +148,7 @@ Mechanism (verified by spike item 7, confirmed by the owner):
 - Seed details: the mount root shows up as root-owned in the box, so the box's Git config needs `safe.directory` for it. Whatever is mounted is readable by every user in the box, regardless of host file modes.
 - Fetch: the host runs `git upload-pack` inside the box through the runtime module's exec, so Git's server side also runs in the box and the host only parses the pack stream. In the spike: `git -c protocol.ext.allow=always fetch "ext::container exec -i <box> git upload-pack /workspace/repo" '+refs/heads/*:refs/remotes/sandcastle/*'`. The `ext` transport is enabled for that one command only; exec needs `-i`.
 - Sync host to box: the agent runs `git fetch` from the read-only source mount. `up` does this once at every start; the agent's own branches are left alone.
+- No host repo (owner decision, 2026-11-13): a box belongs to a folder. If the folder is not inside a Git repo, nothing is mounted from it and `/workspace/repo` starts empty; the agent can `git init` or clone there. `fetch` then needs a host repo to fetch into and says so; after `git init` in the host folder it works. A later `up` mounts the new `.git` and prints a note if the box's repo has no matching `origin`.
 - As built: the clone is `/workspace/repo` and the agent starts in it. `fetch` needs the box to be running, because the workspace volume cannot be attached anywhere else. `up` refuses a repo whose `.git` is a file (linked worktree, submodule) or whose `.git/config` has an HTTP(S) URL with a user name or token, or an `extraheader`.
 
 ### 2.6 Host firewall (pf)
@@ -167,7 +168,7 @@ block return out quick on <bridge> all
 - The bridge interface exists only while the box runs, so the rules load after the box starts, like the relay's box-side bind. Until both are in place the box must not do anything: the entrypoint waits for the relay.
 - Anchor: one line `anchor "sandcastle/*"` in `/etc/pf.conf`, added by `init` (owner decision). `init` keeps a backup (`/etc/pf.conf.sandcastle-backup`), checks the new file with `pfctl -n` and reloads it with `pfctl -f`. Caveat, unverified: reloading the main ruleset may drop rules that system services added at run time (pfctl warns about this). macOS updates may remove it, so `doctor` checks that it is still there, and `up` refuses to start a box without it. Rules go into `sandcastle/<box>`.
 - pf is enabled with a reference token (`pfctl -E`) and released with `pfctl -X` on `down`.
-- Needs root, once per `up`: in the secrets phase `up` starts a small root helper through `sudo` (`src/firewall.rs`). The helper waits, loads the rules when `up` sends them, and removes them and releases the pf token when its input closes. That happens on Ctrl-C, on `down` from another terminal, and also if sandcastle crashes, so no second prompt is needed and no rules are left behind. The helper ignores terminal signals so Ctrl-C cannot kill it before the cleanup.
+- Needs root, once per `up`: in the secrets phase `up` starts a small root helper through `sudo` (`src/firewall.rs`). The helper waits, loads the rules when `up` sends them and removes them once the box has stopped (Ctrl-C, or `down` from another terminal), then releases the pf token when its input closes, so no second prompt is needed. If its input closes while a box still has rules, it fails closed (see section 12). The helper ignores terminal signals so Ctrl-C cannot kill it before the cleanup.
 - `up --no-firewall` skips all of this with a warning. It exists for testing without root.
 - The prompt per `up` stays (owner decision, 2026-11-13). A root helper installed by `init` with a passwordless sudoers rule was offered and not chosen. Instead the owner enables Touch ID for `sudo` (`/etc/pam.d/sudo_local`, see `README.md`), so the prompt is a fingerprint. No code depends on it.
 
@@ -211,6 +212,11 @@ sandcastle/
   src/runtime/apple_container.rs
   spike/                            shell scripts + notes for the manual spike (step 1)
   e2e/                              end-to-end check of the real binary, with a fake gateway
+  src/lib.rs                        the library; src/main.rs is the CLI on top of it
+  src/core/session.rs               a session: secrets and the root helper, obtained once
+  ui/                               the app (Tauri 2): Rust commands in src/, the window in web/
+  packaging/                        bundle script, Homebrew cask template
+  .github/workflows/release.yml     signed release build (not run yet)
 ```
 
 ### Example config (`~/.config/sandcastle/config.toml`, no secret values)
@@ -351,6 +357,12 @@ Start with **zero plugins and zero MCP servers**. Each plugin runs third-party c
 | Only the gateway's models are offered (`enabled_providers`) (2026-11-13) | OpenCode's built-in free models cannot work in the box and one was the default |
 | sandcastle starts the `container` service itself (2026-11-13) | `init` and `up` failed after a reboot |
 | v0.1 is released by a PR from `spike` to `main` (2026-11-13) | Owner request |
+| No secrets agent and no Keychain cache for the CLI (2026-11-13) | One prompt per `up` is good enough; the app is the long-lived session instead |
+| App with Tauri 2, chat stays in the browser (2026-11-13) | The app stays Rust and reuses the library; no web view that shows agent output |
+| App collects the Bitwarden master password in its own field and passes it to `bw unlock --passwordenv` | `bw` can only prompt on a terminal. Cost: the password passes through sandcastle's memory once |
+| App asks for `sudo` with `sudo -A` and an askpass dialog; Touch ID still comes first | Reuses the existing root helper unchanged. A registered privileged helper needs the Developer ID and comes with signing |
+| A box does not need a Git repository (2026-11-13) | The agent can get or create a repo in the chat; requiring one blocked starting a box for a plain folder |
+| Distribution: signed app as a Homebrew cask in a tap, CLI inside the app bundle | One install for both; owner is setting up a Developer ID |
 
 ---
 
@@ -390,6 +402,8 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 3. **Secrets phase and pf. Done 2026-11-12.** The owner ran `init` and `up` with the real vault, root and the real gateway: both prompts appeared and the browser opened on the OpenCode UI. A chat message was answered through the real gateway (owner, 2026-11-13). Verified without them: the secrets phase with an `env://` reference, `up --no-firewall`, `doctor`, and the unit tests for reference parsing, rule generation and interface lookup. Bitwarden module, the single upfront secrets phase, pf rules loaded after box start and removed on `down`/`reset`. Done when `up` prompts once at the start and then runs unattended.
 4. **Git and release. `fetch` done 2026-11-12, end-to-end check and release 2026-11-13.** Verified in a throwaway repo: first `up` clones into the box without untracked files; a commit made in the box arrives under `sandcastle/<branch>`; a hook and `core.fsmonitor` planted in the box do not reach the host repo; the host working tree is untouched; a later `up` keeps the clone and sees new host commits as `origin/*`; a repo with a credential in a remote URL is refused. The end-to-end check is `e2e/run.sh` (see `README.md`): it drives the real binary with its own home folder, a fake gateway and an `env://` key. Run it before every release and after every `container` or OpenCode update.
 
+**The app (branch `ui`, started 2026-11-13):** see 12.
+
 **After v0.1:**
 - v0.2: `log`, `doctor`; model list from the gateway's `/v1/models`; image rebuild with digest pinning.
 - v0.3: optional relay-injected secrets (Brave Search, GitHub token if Q2 = yes).
@@ -420,3 +434,21 @@ The fallback (a proxy container on two networks instead of a host listener) is n
 - The relay is security-critical: keep it small, test it (allowlist matching, Host/Origin checks, key never logged, key never in error messages).
 - Never log secret values. Redact `Authorization` headers in relay logs.
 - Owner preferences: concise, direct, flag tradeoffs explicitly, challenge decisions that look wrong instead of implementing them politely, ask clarifying questions inline. No em dashes in prose.
+
+---
+
+## 12. The app
+
+A second front end in `ui/` (Tauri 2), on the same library as the CLI. UI draft: https://claude.ai/artifact/GSFfGeBAmegXVPHKsgUD8Z
+
+- **Session model:** the app is one session (`src/core/session.rs`). Unlock runs the secrets phase once: `sudo` for one root helper that serves all boxes, then the vault. Boxes start and stop inside the session (`up::plan`, `up::start`, `RunningBox::stop`). Lock or quit stops every box and drops the session, which drops the secrets and makes the helper remove all rules. The CLI uses the same code with one session per `up`.
+- **Window:** static HTML, CSS and JS in `ui/web/`, no bundler and no npm dependencies. Strict CSP, no remote content, no inline script. Its only powers are the commands in `ui/src/main.rs` and the folder picker (`ui/capabilities/default.json`). Text from the system is set as text, never as HTML.
+- **Chat:** opened in the default browser through a fresh one-time link (`UiGateway::new_login_url`), which replaces any unused earlier link. The link lands in the newest chat session, or a new one (`Agent::landing_path`); the login path is under `/auth/` because OpenCode's service worker answers other navigations from its cache. A box keeps its chat port across starts when the port is still free (`ui_port` in the box record).
+- **Testing without root:** `sandcastle-ui --no-firewall`, same meaning and warning as the CLI flag.
+- **Packaging:** `packaging/bundle.sh` builds `sandcastle.app` with the CLI at `Contents/MacOS/sandcastle`. The script sets `CI` for the bundler so the `.dmg` window is not arranged through Finder (that step needs Automation permission for the terminal and failed without it). The release workflow signs and notarizes; the six Apple secrets are set in the repository (2026-11-13). The tap is https://github.com/cburkhal/homebrew-tap. It holds a formula for the CLI, built from source from the release tag (`brew install cburkhal/tap/sandcastle`, verified with v0.1 on 2026-11-13); bump its `url` and `sha256` at each release. The cask template for the app is `packaging/homebrew/sandcastle.rb`; it goes into the tap with the first signed release, and the formula must then go or be marked as conflicting, because both install a `sandcastle` command.
+
+Verified 2026-11-13: the library refactor passes the unit tests and `e2e/run.sh`; the firewall helper's multi-box protocol passes a test with a fake `pfctl`; the app builds, starts and bundles (unsigned). A local build signed with the Developer ID produces a valid `.app` and `.dmg` (not notarized: Gatekeeper rejects it as "Unnotarized Developer ID"). **Not verified:** notarization, anything that needs a click (unlock, start, stop, chat, fetch in the window), the askpass dialog, the multi-box helper with real `pfctl`, the release workflow, the cask.
+
+Not built yet: menu bar item, network view (allowed and refused hosts), unfetched-commit counts, diff review, notifications, `init` and `doctor` in the app, reset.
+
+**Fail closed (2026-11-13, owner decision):** if sandcastle goes away while a box still has rules (a crash, or a box that could not be stopped), the root helper does not remove the rules. It replaces them with "block everything on the box's interface", keeps pf enabled, and records the box name and its pf token in `/var/run/sandcastle-pf-blocked` and `/var/run/sandcastle-pf-tokens` (root-only, cleared at boot like pf itself). Cleanup is needed because a bridge interface name is reused: stale block rules would otherwise hit whatever gets that name next. It happens at the next session start: the helper reports the blocked boxes, sandcastle unloads every one that no longer runs, and when none is left the helper releases the kept tokens. A blocked box that still runs stays blocked until it is stopped (`sandcastle down`) and a session starts. Tested against a fake `pfctl` only.

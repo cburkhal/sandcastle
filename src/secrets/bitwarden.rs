@@ -22,11 +22,24 @@ const KEYCHAIN_CLIENT_SECRET: &str = "bitwarden-client-secret";
 
 pub struct Bitwarden {
     session: Option<Secret>,
+    /// Master password collected by a front end without a terminal.
+    password: Option<Secret>,
 }
 
+/// Name of the variable that carries the master password to `bw unlock`.
+const PASSWORD_ENV: &str = "SANDCASTLE_BW_PASSWORD";
+
 impl Bitwarden {
+    /// `bw` asks for the master password on the terminal.
     pub fn new() -> Self {
-        Bitwarden { session: None }
+        Bitwarden { session: None, password: None }
+    }
+
+    /// For front ends without a terminal: the master password was typed into
+    /// their own dialog. It is passed to `bw unlock` once, by environment
+    /// variable, and dropped.
+    pub fn with_password(password: Secret) -> Self {
+        Bitwarden { session: None, password: Some(password) }
     }
 
     fn status(&self) -> Result<String> {
@@ -51,6 +64,8 @@ impl Bitwarden {
                 .env("BW_CLIENTSECRET", secret.expose())
                 .stdout(Stdio::null())
                 .status()?
+        } else if self.password.is_some() {
+            bail!("the Bitwarden CLI is not logged in on this Mac. Run `bw login` in a terminal once (see README.md)");
         } else {
             println!("\n>> Bitwarden login (email, MASTER password, and a second factor if you use one)");
             println!("   Needed once: this Mac's Bitwarden CLI is not logged in.");
@@ -103,19 +118,25 @@ impl SecretStore for Bitwarden {
         if self.status()? == "unauthenticated" {
             self.login()?;
         }
-        // The prompt itself comes from `bw` and only says "Master password".
-        println!("\n>> Bitwarden MASTER password (unlocks your vault for this run only)");
-        println!("   Needed to: {reason}");
-        let mut child = Command::new(BIN)
-            .args(["unlock", "--raw"])
-            .stdin(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .stdout(Stdio::piped())
-            .spawn()?;
+        let mut command = Command::new(BIN);
+        command.args(["unlock", "--raw"]).stdout(Stdio::piped());
+        // Taken, not borrowed: the password is needed exactly once.
+        let password = self.password.take();
+        if let Some(password) = &password {
+            // By environment, not by argument: arguments show up in `ps`.
+            command.args(["--passwordenv", PASSWORD_ENV]).env(PASSWORD_ENV, password.expose());
+            command.stdin(Stdio::null()).stderr(Stdio::null());
+        } else {
+            // The prompt itself comes from `bw` and only says "Master password".
+            println!("\n>> Bitwarden MASTER password (unlocks your vault for this run only)");
+            println!("   Needed to: {reason}");
+            command.stdin(Stdio::inherit()).stderr(Stdio::inherit());
+        }
+        let mut child = command.spawn()?;
         let mut session = String::new();
         child.stdout.take().expect("stdout was piped").read_to_string(&mut session)?;
         if !child.wait()?.success() || session.trim().is_empty() {
-            bail!("Bitwarden unlock failed");
+            bail!("Bitwarden unlock failed (wrong master password?)");
         }
         // `bw` leaves the cursor on the prompt line.
         println!();
