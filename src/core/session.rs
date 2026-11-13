@@ -35,7 +35,9 @@ pub fn needs_store_password(cx: &App, store: &dyn SecretStore) -> Result<bool> {
 
 impl Session {
     /// The only code that may prompt. `sudo` comes first, then the store.
-    pub fn open(cx: &App, store: &mut dyn SecretStore, sudo: Option<Prompt>) -> Result<Self> {
+    /// `progress` is told what is being waited for, for a front end that
+    /// shows it; the terminal prompts explain themselves.
+    pub fn open(cx: &App, store: &mut dyn SecretStore, sudo: Option<Prompt>, progress: &dyn Fn(&str)) -> Result<Self> {
         let config = config::load(cx.home)?;
         let llm = config.llm.as_ref().ok_or_else(|| {
             anyhow!("no LLM gateway configured: add [llm] base_url to {}", config::path(cx.home).display())
@@ -46,6 +48,7 @@ impl Session {
                 if !firewall::anchor_configured()? {
                     bail!("{} lacks sandcastle's anchor line; run `sandcastle init`", firewall::PF_CONF);
                 }
+                progress("Waiting for Touch ID or your macOS login password (sudo, for the firewall rules).");
                 let mut firewall = Firewall::start(prompt)?;
                 // Boxes an earlier, crashed run left blocked: once a box is
                 // gone its rules can go. A box that still runs stays blocked.
@@ -59,6 +62,7 @@ impl Session {
             None => None,
         };
 
+        progress("Unlocking the vault and reading the secrets.");
         let mut resolver = Resolver::new(store);
         let llm_base_url = resolver.plain_or_reference(&llm.base_url, "the LLM gateway URL")?;
         let llm_key = resolver.secret(&llm.api_key, "the LLM key")?;

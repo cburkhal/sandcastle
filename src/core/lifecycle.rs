@@ -188,11 +188,18 @@ pub fn reset(cx: &App, path: &Path, assume_yes: bool) -> Result<()> {
         }
     }
 
-    cx.runtime.remove(&name)?;
+    delete(cx, &record)?;
+    println!("Deleted box {name}, its network and its volumes.");
+    Ok(())
+}
+
+/// Delete a box with its network, both volumes and its state, without
+/// asking. Everything the agent did in the box is lost. The host folder is
+/// not touched.
+pub fn delete(cx: &App, record: &BoxRecord) -> Result<()> {
+    cx.runtime.remove(&record.name)?;
     cx.runtime.volume_remove(&record.home_volume())?;
     cx.runtime.volume_remove(&record.workspace_volume())?;
     cx.runtime.network_remove(&record.network())?;
-    state::remove(cx.home, &name)?;
-    println!("Deleted box {name}, its network and its volumes.");
-    Ok(())
+    state::remove(cx.home, &record.name)
 }
